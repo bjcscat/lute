@@ -1,0 +1,10 @@
+---
+Checks: "*,-altera-*,-fuchsia-*,-google-*,-zircon-*,-abseil-*,-readability-convert-member-functions-to-static,-modernize-use-trailing-return-type,-llvm-*,-llvmlibc-*,-misc-no-recursion,-bugprone-easily-swappable-parameters,-misc-non-private-member-variables-in-classes,-cppcoreguidelines-non-private-member-variables-in-classes,-cppcoreguidelines-owning-memory"
+CheckOptions:
+  misc-non-private-member-variables-in-classes: IgnoreClassesWithAllMemberVariablesBeingPublic,
+  readability-identifier-length.IgnoredParameterNames: "^[nL]$"
+  readability-identifier-length.IgnoredVariableNames: "^[L]$"
+
+WarningsAsErrors: "*"
+HeaderFilterRegex: ""
+FormatStyle: none
