@@ -36,13 +36,12 @@ include(Dependencies.cmake)
 
 include(cmake/generate_file.cmake)
 include(cmake/tools.cmake)
-include(cmake/luau_compile.cmake)
 
 add_subdirectory(base)
 add_subdirectory(std)
 add_subdirectory(runtime)
 
 add_subdirectory(fs)
-# add_subdirectory(time)
+add_subdirectory(time)
 
 add_subdirectory(cli)

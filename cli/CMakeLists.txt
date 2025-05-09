@@ -23,4 +23,4 @@ target_sources(Lute.CLI PRIVATE
 
 target_include_directories(Lute.CLI PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
-target_link_libraries(Lute.CLI PRIVATE Lute.Base Lute.Runtime Lute.Fs Lute.Std)
+target_link_libraries(Lute.CLI PRIVATE Lute.Base Lute.Runtime Lute.Fs Lute.Std Lute.Time)

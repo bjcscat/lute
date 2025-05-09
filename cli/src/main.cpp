@@ -17,7 +17,9 @@
 #include "lute/Runtime.h"
 // #include "lute/RuntimeLib.h"
 #include "lute/Scheduler.h"
+
 #include "lute/fs.h"
+#include "lute/time.h"
 
 // GENERATED
 #include "cli_source.h"
@@ -66,7 +68,7 @@ int main(int argc, const char* argv[])
     std::vector<RuntimeOptions::Library> libs;
 
     libs.emplace_back("@lute/fs", convert_array(fs::lib));
-    // libs.emplace_back("time", convert_array(lib_time::lib));
+    libs.emplace_back("@lute/time", convert_array(lib_time::lib));
     // libs.emplace_back("runtime", convert_array(runtime::lib));
 
     std::promise<LuauFunction> resumption;
