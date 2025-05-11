@@ -34,14 +34,16 @@ add_link_options(-fsanitize=undefined,address -g)
 include(cmake/CPM.cmake)
 include(Dependencies.cmake)
 
-include(cmake/generate_file.cmake)
 include(cmake/tools.cmake)
+include(cmake/embed_file.cmake)
+include(cmake/embed_map.cmake)
 
 add_subdirectory(base)
 add_subdirectory(std)
 add_subdirectory(runtime)
 
 add_subdirectory(fs)
+add_subdirectory(net)
 add_subdirectory(time)
 
 add_subdirectory(cli)
