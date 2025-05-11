@@ -1,13 +1,11 @@
 #include "lute/Scheduler.h"
-#include "lualib.h"
-#include "lute/LuteException.h"
 #include "uv.h"
+#include "lua.h"
 
-#include <future>
 #include <iostream>
-#include <lua.h>
 #include <memory>
-#include <optional>
+#include <mutex>
+#include <thread>
 
 Scheduler::Scheduler()
     : loop{new uv_loop_t}
@@ -76,7 +74,7 @@ void Scheduler::run()
 {
     bool doing_work = true;
 
-    while (doing_work)
+    while (doing_work || active_handles > 0)
     {
         if (local_futures.has_work())
         {
@@ -97,6 +95,26 @@ void Scheduler::run()
         else
         {
             doing_work = local_futures.has_work();
+        }
+
+        if (!doing_work && active_handles > 0) {
+            std::unique_lock lock {barrier.interrupt_mutex};
+            std::cout << "entered await\n";
+
+            barrier.conditional.wait(lock, [this]() {
+                std::cerr << "CHECK\n";
+                return barrier.has_work;
+            });
+
+            std::cout << "signaled\n";
+
+            barrier.has_work = false;
+
+
+            lock.unlock();
+            barrier.conditional.notify_one();
+
+            // std::this_thread::yield();
         }
     }
 }

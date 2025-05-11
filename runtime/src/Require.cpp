@@ -1,10 +1,12 @@
 #include "lute/Require.h"
 #include "Luau/Require.h"
 #include "lua.h"
+#include "lute/LuteException.h"
 #include "lute/Runtime.h"
+#include <iostream>
 #include <string_view>
 
-bool RequireContext::is_require_allowed(lua_State*  /*L*/, const char* requirer_chunkname)
+bool RequireContext::is_require_allowed(lua_State* /*L*/, const char* requirer_chunkname)
 {
     std::string_view chunkname = requirer_chunkname;
 
@@ -17,7 +19,7 @@ bool RequireContext::is_require_allowed(lua_State*  /*L*/, const char* requirer_
     return isStdin || isFile || isStdLibFile;
 }
 
-luarequire_NavigateResult RequireContext::reset(lua_State*  /*L*/, const char* requirer_chunkname)
+luarequire_NavigateResult RequireContext::reset(lua_State* /*L*/, const char* requirer_chunkname)
 {
     std::string_view chunkname = requirer_chunkname;
     if (chunkname == "=stdin")
@@ -37,7 +39,7 @@ luarequire_NavigateResult RequireContext::reset(lua_State*  /*L*/, const char* r
     return NAVIGATE_NOT_FOUND;
 }
 
-luarequire_NavigateResult RequireContext::jump_to_alias(lua_State*  /*L*/, const char* path)
+luarequire_NavigateResult RequireContext::jump_to_alias(lua_State* /*L*/, const char* path)
 {
     std::string_view view{path};
 
@@ -55,7 +57,7 @@ luarequire_NavigateResult RequireContext::jump_to_alias(lua_State*  /*L*/, const
     return NAVIGATE_SUCCESS;
 }
 
-luarequire_NavigateResult RequireContext::to_parent(lua_State*  /*L*/)
+luarequire_NavigateResult RequireContext::to_parent(lua_State* /*L*/)
 {
     if (current_path.root_path() == current_path)
     {
@@ -72,7 +74,7 @@ luarequire_NavigateResult RequireContext::to_parent(lua_State*  /*L*/)
 
     return NAVIGATE_SUCCESS;
 }
-luarequire_NavigateResult RequireContext::to_child(lua_State*  /*L*/, const char* name)
+luarequire_NavigateResult RequireContext::to_child(lua_State* /*L*/, const char* name)
 {
     at_fake_root = false;
     current_path /= name;
@@ -85,7 +87,7 @@ luarequire_NavigateResult RequireContext::to_child(lua_State*  /*L*/, const char
     return add_suffix(current_path);
 }
 
-bool RequireContext::is_module_present(lua_State*  /*L*/)
+bool RequireContext::is_module_present(lua_State* /*L*/)
 {
     if (std_vfs == nullptr || vfs_type == VFSType::Std)
     {
@@ -95,33 +97,35 @@ bool RequireContext::is_module_present(lua_State*  /*L*/)
     return std::filesystem::is_regular_file(current_path);
 }
 
-luarequire_WriteResult RequireContext::get_contents(lua_State*  /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
+luarequire_WriteResult RequireContext::get_contents(lua_State* /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
 {
     if (vfs_type == VFSType::Std)
     {
-        return write(std_vfs->at(current_path.filename()), buffer, buffer_size, size_out);
+        luarequire_WriteResult result = write(std_vfs->at(current_path.filename()), buffer, buffer_size, size_out);
+
+        return result;
     }
 
     return write_file(current_path, buffer, buffer_size, size_out);
 }
 
-luarequire_WriteResult RequireContext::get_chunkname(lua_State*  /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
+luarequire_WriteResult RequireContext::get_chunkname(lua_State* /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
 {
     return write("@" + std::string{current_path}, buffer, buffer_size, size_out);
 }
 
 
-luarequire_WriteResult RequireContext::get_cache_key(lua_State*  /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
+luarequire_WriteResult RequireContext::get_cache_key(lua_State* /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
 {
     return write(current_path, buffer, buffer_size, size_out);
 }
 
-bool RequireContext::is_config_present(lua_State*  /*L*/)
+bool RequireContext::is_config_present(lua_State* /*L*/)
 {
     return at_fake_root || std::filesystem::exists(current_path / ".luaurc");
 }
 
-luarequire_WriteResult RequireContext::get_config(lua_State*  /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
+luarequire_WriteResult RequireContext::get_config(lua_State* /*L*/, char* buffer, size_t buffer_size, size_t* size_out)
 {
     if (at_fake_root)
     {
@@ -148,6 +152,8 @@ int RequireContext::load(lua_State* L, const char* chunkname, const char* conten
 
     std::string_view chunkname_view{chunkname};
 
+    // lute modules
+
     if (chunkname_view.rfind("@@lute/", 0) == 0)
     {
         lua_getfield(L, LUA_REGISTRYINDEX, "_MODULES");
@@ -159,13 +165,17 @@ int RequireContext::load(lua_State* L, const char* chunkname, const char* conten
         {
             lua_pop(L, 1);
             lua_pushstring(L, (std::string("no lute library: ") + chunkname_view.substr(1).data()).data());
-            lua_error(L); //
+            lua_error(L);
         }
 
         return 1;
     }
 
+    // luau modules
+
     lua_State* module_thread = lua_newthread(main_thread);
+
+    lua_xmove(main_thread, module_thread, 1);
 
     runtime->load_source(module_thread, contents, chunkname);
 
@@ -173,22 +183,21 @@ int RequireContext::load(lua_State* L, const char* chunkname, const char* conten
 
     if (status == LUA_OK)
     {
-        if (lua_gettop(module_thread) == 0)
+        int results = lua_gettop(module_thread) - 1;
+
+        if (results == 0)
         {
-            lua_pushstring(L, "module must return a value");
-            lua_error(L);
+            throw LuteException{"module must return a value"};
         }
 
-        else if (lua_gettop(module_thread) > 1)
+        if (results > 1)
         {
-            lua_pushstring(L, "module may not return more than one value");
-            lua_error(L);
+            throw LuteException{"module may not return more than one value"};
         }
     }
     else if (status == LUA_YIELD)
     {
-        lua_pushstring(L, "module can not yield");
-        lua_error(L);
+        throw LuteException{"module can not yield"};
     }
 
     lua_xmove(module_thread, L, 1);
@@ -201,7 +210,8 @@ int RequireContext::load(lua_State* L, const char* chunkname, const char* conten
     return 1;
 }
 
-void RequireContext::set_vfs(const StdVFS* vfs) {
+void RequireContext::set_vfs(const StdVFS* vfs)
+{
     std_vfs = vfs;
 }
 
@@ -283,7 +293,7 @@ luarequire_WriteResult get_config(lua_State* L, void* ctx, char* buffer, size_t 
 
 // Executes the module and places the result on the stack. Returns the
 // number of results placed on the stack.
-int load(lua_State* L, void* ctx, const char*  /*path*/, const char* chunkname, const char* contents)
+int load(lua_State* L, void* ctx, const char* /*path*/, const char* chunkname, const char* contents)
 {
     return static_cast<RequireContext*>(ctx)->load(L, chunkname, contents);
 }

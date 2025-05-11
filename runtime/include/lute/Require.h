@@ -10,7 +10,6 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <map>
 #include <string>
 
 class RequireContext
@@ -44,14 +43,16 @@ public:
 private:
     static luarequire_WriteResult write(const std::string& source, char* buffer, size_t buffer_size, size_t* size_out)
     {
-        if (source.size() > buffer_size)
+        size_t null_terminated_size = source.size() + 1;
+
+        *size_out = null_terminated_size;
+
+        if (null_terminated_size > buffer_size)
         {
             return WRITE_BUFFER_TOO_SMALL;
         }
 
         std::memcpy(buffer, source.c_str(), source.size());
-
-        *size_out += source.size();
 
         return WRITE_SUCCESS;
     }

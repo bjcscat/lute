@@ -9,18 +9,6 @@
 #include <memory>
 
 // NOLINTNEXTLINE
-#define TRIVIAL_RUN_NO_SCHEDULE(fn, ...) \
-    void run() override \
-    { \
-        int err = fn(loop, &req, __VA_ARGS__, async_callback); \
-\
-        if (is_uv_error(err)) \
-        { \
-            throw LuteException{uv_strerror(err)}; \
-        } \
-    }
-
-// NOLINTNEXTLINE
 #define TRIVIAL_RUN(fn, ...) \
     void run() override \
     { \

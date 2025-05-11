@@ -8,4 +8,6 @@ namespace userdata_tags {
     // time
     constexpr int DURATION_TAG = 3;
     constexpr int INSTANT_TAG = 4;
+    // net
+    constexpr int SERVE_STATE_TAG = 5;
 }

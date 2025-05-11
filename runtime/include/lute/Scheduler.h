@@ -4,12 +4,15 @@
 #include "lute/LuteException.h"
 #include "uv.h"
 
+#include <condition_variable>
 #include <functional>
 #include <future>
+#include <iostream>
 #include <lua.h>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <utility>
 #include <vector>
 
@@ -167,6 +170,56 @@ private:
     std::vector<LuauThreadFuture> resumptions;
 };
 
+class InterruptBarrier
+{
+public:
+    /**
+     * Called in worker threads as well as main threads to signal to the primary thread that work is completed or there is something to do
+     */
+    void signal()
+    {
+        std::cerr << "signaling the presense of work\n";
+        {
+            std::lock_guard lock{interrupt_mutex};
+            has_work = true;
+        }
+
+        conditional.notify_one();
+
+        std::cerr << "signaled the presense of work\n";
+
+        {
+            std::unique_lock lock{interrupt_mutex};
+            conditional.wait(
+                lock,
+                [this]()
+                {
+                    return !has_work;
+                }
+            );
+        }
+    }
+
+    /**
+     * Resets the has_work flag
+     */
+    void reset()
+    {
+        std::lock_guard lock{interrupt_mutex};
+        has_work = false;
+    }
+
+    std::unique_lock<std::mutex> get_lock()
+    {
+        return std::unique_lock{interrupt_mutex};
+    }
+
+// private:
+    bool has_work = false;
+    std::mutex interrupt_mutex;
+    std::condition_variable conditional;
+};
+
 class Scheduler
 {
 public:
@@ -179,12 +232,28 @@ public:
         local_futures.push(std::move(info));
     }
 
+    void remote_schedule_future()
+    {
+        barrier.signal();
+    }
+
     uv_loop_t* get_uv_loop()
     {
         return loop.get();
     }
 
-    void set_error_callback(LuauFunction callback) {
+    void add_handle()
+    {
+        active_handles++;
+    }
+
+    void remove_handle()
+    {
+        active_handles--;
+    }
+
+    void set_error_callback(LuauFunction callback)
+    {
         error_callback = std::move(callback);
     }
 
@@ -208,6 +277,12 @@ private:
     };
 
     /**
+     * Number of active handles to the scheduler. Used to keep the scheduler running even when no work is present due to an existing task like a web
+     * server
+     */
+    int active_handles = 0;
+
+    /**
      * Error callback invoked upon each error
      */
     LuauFunction error_callback;
@@ -223,4 +298,9 @@ private:
      * Queue which uses a mutex to synchronize writes from across threads
      */
     MutexResumptionQueue shared_futures;
+
+    /**
+     * Blocks primary thread from running whilst there is no work to be done
+     */
+    InterruptBarrier barrier;
 };

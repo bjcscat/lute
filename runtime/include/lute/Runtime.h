@@ -115,9 +115,11 @@ public:
     Runtime& operator=(Runtime&&) = delete;
 
     ~Runtime();
+
 protected:
     // to permit make_shared creation
     explicit Runtime(const GlobalRuntime* runtime, const RuntimeOptions& options);
+
 private:
     using StatePointer = std::unique_ptr<lua_State, StateDeleter>;
 

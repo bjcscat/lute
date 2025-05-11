@@ -3,9 +3,6 @@
 #include "lute/Runtime.h"
 
 #include <map>
-#include <memory>
-#include <optional>
-#include <thread>
 
 class GlobalRuntime
 {
