@@ -1,7 +1,14 @@
 --!optimize 2
 
-local fs = require("@lute/fs")
+local net = require("@std/time")
 
-print("QED", fs.open("Dependencies.cmake", "o"))
+-- net.serve({
 
-print("damn")
+--     handler = function()
+
+--     end
+-- })
+
+for k, v in net do
+    print(k, v)
+end

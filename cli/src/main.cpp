@@ -19,6 +19,7 @@
 #include "lute/Scheduler.h"
 
 #include "lute/fs.h"
+#include "lute/net.h"
 #include "lute/time.h"
 
 // GENERATED
@@ -45,7 +46,7 @@ std::map<std::string, const char*> setup_vfs()
 {
     std::map<std::string, const char*> std_vfs{};
 
-    for (auto [name, src] : STD_LIBS)
+    for (const auto& [name, src] : LUTE_STD)
     {
         std_vfs.insert({name, src});
     }
@@ -69,6 +70,7 @@ int main(int argc, const char* argv[])
 
     libs.emplace_back("@lute/fs", convert_array(fs::lib));
     libs.emplace_back("@lute/time", convert_array(lib_time::lib));
+    libs.emplace_back("@lute/net", convert_array(net::lib));
     // libs.emplace_back("runtime", convert_array(runtime::lib));
 
     std::promise<LuauFunction> resumption;
@@ -80,7 +82,7 @@ int main(int argc, const char* argv[])
     resumption.set_value(
         [runtime, argc, argv](lua_State* L) // NOLINT
         {
-            runtime->load_source(L, CLI_SOURCE, "@cli");
+            runtime->load_source(L, LUTE_CLI_FILE, "@cli");
 
             lua_createtable(L, argc, 0);
             for (int i = 0; i < argc; i++) {
