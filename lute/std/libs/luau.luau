@@ -29,7 +29,7 @@ function luau.loadbypath(requirePath: path.pathlike, env: { [any]: any }?): any
 
 	fs.close(migrationHandle)
 
-	return luau.load(migrationBytecode, requirePathStr, env)()
+	return luau.load(migrationBytecode, "@" .. requirePathStr, env)()
 end
 
 function luau.typeofmodule(modulepath: path.pathlike): string
