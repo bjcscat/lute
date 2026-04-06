@@ -1,5 +1,6 @@
 #include "lute/userlandvfs.h"
 
+#include "lute/common.h"
 #include "lute/modulepath.h"
 
 #include "Luau/Common.h"
@@ -68,14 +69,14 @@ ConfigStatus Subtree::getConfigStatus() const
 std::optional<std::string> Subtree::getConfig() const
 {
     ConfigStatus status = getConfigStatus();
-    LUAU_ASSERT(status == ConfigStatus::PresentJson || status == ConfigStatus::PresentLuau);
+    LUTE_ASSERT(status == ConfigStatus::PresentJson || status == ConfigStatus::PresentLuau);
 
     if (status == ConfigStatus::PresentJson)
         return readFile(currentModulePath.getPotentialConfigPath(Luau::kConfigName));
     else if (status == ConfigStatus::PresentLuau)
         return readFile(currentModulePath.getPotentialConfigPath(Luau::kLuauConfigName));
 
-    LUAU_UNREACHABLE();
+    LUTE_UNREACHABLE();
 }
 
 bool Subtree::isModulePresent() const
@@ -132,6 +133,20 @@ NavigationStatus UserlandVfs::resetToPath(const std::string& path)
     return fileVfs.resetToPath(path);
 }
 
+NavigationStatus UserlandVfs::jumpToAlias(const std::string& path)
+{
+    for (const auto& [identifier, info] : allDependencies)
+    {
+        if (path.rfind(info.rootDirectory, 0) == 0)
+            return jumpToDependencySubtree(identifier);
+    }
+
+    currentSubtree = std::nullopt;
+    vfsType = VFSType::Disk;
+
+    return fileVfs.jumpToAlias(path);
+}
+
 NavigationStatus UserlandVfs::toAliasFallback(std::string_view aliasUnprefixed)
 {
     std::vector<Identifier> availableDependencies;
@@ -141,7 +156,7 @@ NavigationStatus UserlandVfs::toAliasFallback(std::string_view aliasUnprefixed)
         availableDependencies = directDependencies;
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         availableDependencies = currentSubtree->getInfo().dependencies;
     }
 
@@ -179,7 +194,7 @@ NavigationStatus UserlandVfs::toParent()
         status = fileVfs.toParent();
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         status = currentSubtree->toParent();
         break;
     }
@@ -196,7 +211,7 @@ NavigationStatus UserlandVfs::toChild(const std::string& name)
         status = fileVfs.toChild(name);
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         status = currentSubtree->toChild(name);
         break;
     }
@@ -212,7 +227,7 @@ ConfigStatus UserlandVfs::getConfigStatus() const
         status = fileVfs.getConfigStatus();
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         status = currentSubtree->getConfigStatus();
         break;
     }
@@ -228,7 +243,7 @@ std::optional<std::string> UserlandVfs::getConfig() const
         config = fileVfs.getConfig();
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         config = currentSubtree->getConfig();
         break;
     }
@@ -244,7 +259,7 @@ bool UserlandVfs::isModulePresent() const
         isPresent = fileVfs.isModulePresent();
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         isPresent = currentSubtree->isModulePresent();
         break;
     }
@@ -265,7 +280,7 @@ std::string UserlandVfs::getCurrentPath() const
         path = fileVfs.getAbsoluteFilePath();
         break;
     case VFSType::Subtree:
-        LUAU_ASSERT(currentSubtree);
+        LUTE_ASSERT(currentSubtree);
         path = currentSubtree->getCurrentPath();
         break;
     }

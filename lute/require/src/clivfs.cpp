@@ -1,10 +1,12 @@
 #include "lute/clivfs.h"
 
 #include "lute/clicommands.h"
-
-#include "Luau/Common.h"
+#include "lute/common.h"
+#include "lute/modulepath.h"
 
 #include <string>
+
+constexpr std::string_view kCliAliasPrefix = "@cli";
 
 static bool isCliModule(const std::string& path)
 {
@@ -23,7 +25,7 @@ static std::optional<std::string> readCliModule(const std::string& path)
 
 static bool isCliDirectory(const std::string& path)
 {
-    if (path == "@cli")
+    if (path == kCliAliasPrefix)
         return true;
 
     CliModuleResult result = getCliModule(path);
@@ -32,30 +34,25 @@ static bool isCliDirectory(const std::string& path)
 
 NavigationStatus CliVfs::resetToPath(const std::string& path)
 {
-    if (path == "@cli")
+    if (path.rfind(kCliAliasPrefix, 0) == 0)
     {
-        modulePath = ModulePath::create("@cli", "", isCliModule, isCliDirectory);
+        std::string filePath = path == kCliAliasPrefix ? "" : path.substr(kCliAliasPrefix.size() + 1);
+        modulePath = ModulePath::create(std::string(kCliAliasPrefix), filePath, isCliModule, isCliDirectory);
         return modulePath ? NavigationStatus::Success : NavigationStatus::NotFound;
     }
 
-    std::string cliPrefix = "@cli/";
-
-    if (path.find_first_of(cliPrefix) != 0)
-        return NavigationStatus::NotFound;
-
-    modulePath = ModulePath::create("@cli", path.substr(cliPrefix.size()), isCliModule, isCliDirectory);
-    return modulePath ? NavigationStatus::Success : NavigationStatus::NotFound;
+    return NavigationStatus::NotFound;
 }
 
 NavigationStatus CliVfs::toParent()
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     return modulePath->toParent();
 }
 
 NavigationStatus CliVfs::toChild(const std::string& name)
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     return modulePath->toChild(name);
 }
 
@@ -66,9 +63,9 @@ bool CliVfs::isModulePresent() const
 
 std::string CliVfs::getIdentifier() const
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     ResolvedRealPath result = modulePath->getRealPath();
-    LUAU_ASSERT(result.status == NavigationStatus::Success);
+    LUTE_ASSERT(result.status == NavigationStatus::Success);
     return result.realPath;
 }
 

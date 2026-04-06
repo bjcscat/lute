@@ -27,15 +27,15 @@ local function parse(arguments: { string }): Config
 		migrationPath = nil :: string?,
 		migrationOptions = {},
 		filePaths = {},
-		outputFile = nil,
+		outputFile = nil :: string?,
 	}
 
 	local i = 1
 	while i <= #arguments do
 		local argument = arguments[i]
 
-		if stringext.hasprefix(argument, "--") then
-			local name = stringext.removeprefix(argument, "--")
+		if stringext.hasPrefix(argument, "--") then
+			local name = stringext.removePrefix(argument, "--")
 
 			if config.migrationPath == nil then
 				-- Options before the codemod file are parsed as options for the tool itself

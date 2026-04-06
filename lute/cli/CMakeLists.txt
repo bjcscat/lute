@@ -25,9 +25,10 @@ add_library(Lute.CLI.lib STATIC)
 target_sources(Lute.CLI.lib PRIVATE
     include/lute/climain.h
     include/lute/compile.h
-    include/lute/fileutils.h
+    include/lute/coverage.h
     include/lute/luauflags.h
     include/lute/packagerun.h
+    include/lute/profiler.h
     include/lute/reporter.h
     include/lute/requiresetup.h
     include/lute/staticrequires.h
@@ -36,9 +37,10 @@ target_sources(Lute.CLI.lib PRIVATE
 
     src/climain.cpp
     src/compile.cpp
-    src/fileutils.cpp
+    src/coverage.cpp
     src/luauflags.cpp
     src/packagerun.cpp
+    src/profiler.cpp
     src/requiresetup.cpp
     src/staticrequires.cpp
     src/tc.cpp
@@ -47,7 +49,7 @@ target_sources(Lute.CLI.lib PRIVATE
 
 target_compile_features(Lute.CLI.lib PUBLIC cxx_std_17)
 target_include_directories(Lute.CLI.lib PUBLIC include ${CLI_GENERATED_INCLUDE_DIR} ${ZLIB_INCLUDE_DIR})
-target_link_libraries(Lute.CLI.lib PRIVATE Luau.Common Luau.Compiler Luau.Config Luau.CodeGen Luau.Analysis Luau.VM Lute.CLI.Commands Lute.Luau Lute.Process Lute.Require Lute.Runtime Luau.CLI.lib zlibstatic)
+target_link_libraries(Lute.CLI.lib PRIVATE Luau.Common Luau.Compiler Luau.Config Luau.CodeGen Luau.Analysis Luau.VM Lute.CLI.Commands Lute.Luau Lute.Process Lute.Require Lute.Runtime Luau.CLI.lib Lute.Common zlibstatic)
 target_compile_options(Lute.CLI.lib PRIVATE ${LUTE_OPTIONS})
 
 add_executable(Lute.CLI)

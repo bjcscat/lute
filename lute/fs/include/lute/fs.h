@@ -35,28 +35,28 @@ int writestringtofile(lua_State* L);
 int readasync(lua_State* L);
 
 /* Removes a file */
-int fs_remove(lua_State* L);
+int remove(lua_State* L);
 
 /* Creates a folder */
-int fs_mkdir(lua_State* L);
+int mkdir(lua_State* L);
 
 /* Removes a directory */
-int fs_rmdir(lua_State* L);
+int rmdir(lua_State* L);
 
 /* Gets the metadata of a file */
-int fs_stat(lua_State* L);
+int stat(lua_State* L);
 
 /* Checks if a file exists */
-int fs_exists(lua_State* L);
+int exists(lua_State* L);
 
 /* Copies a file to another path */
-int fs_copy(lua_State* L);
+int copy(lua_State* L);
 
 /* Creates a link to a file */
-int fs_link(lua_State* L);
+int link(lua_State* L);
 
 /* Creates a symlink to a file */
-int fs_symlink(lua_State* L);
+int symlink(lua_State* L);
 
 /* Gets the type of a file entry */
 int type(lua_State* L);
@@ -74,20 +74,20 @@ static const luaL_Reg lib[] = {
     {"write", write},
     {"close", close},
 
-    {"remove", fs_remove},
+    {"remove", remove},
 
-    {"stat", fs_stat},
-    {"exists", fs_exists},
+    {"stat", stat},
+    {"exists", exists},
     {"type", type},
 
     {"watch", fs_watch},
-    {"link", fs_link},
-    {"symlink", fs_symlink},
-    {"copy", fs_copy},
+    {"link", link},
+    {"symlink", symlink},
+    {"copy", copy},
 
-    {"mkdir", fs_mkdir},
+    {"mkdir", mkdir},
     {"listdir", listdir},
-    {"rmdir", fs_rmdir},
+    {"rmdir", rmdir},
 
     {NULL, NULL},
 };

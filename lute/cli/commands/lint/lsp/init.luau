@@ -1,6 +1,7 @@
-local pathLib = require("@std/path")
 local lintTypes = require("./types")
 local lspTypes = require("@self/types")
+local pathLib = require("@std/path")
+local syntax = require("@std/syntax")
 local tableext = require("@std/tableext")
 
 local lsp = {}
@@ -25,39 +26,50 @@ local function tag(t: lintTypes.tag): number
 	end
 end
 
-local function diagnostic(lint: lintTypes.LintViolation): lspTypes.Diagnostic
+local function getRange(location: syntax.Span): lspTypes.Range
 	return table.freeze({
-		range = table.freeze({
-			start = table.freeze({
-				line = lint.location.beginline - 1,
-				character = lint.location.begincolumn - 1,
-			}),
-			["end"] = table.freeze({
-				line = lint.location.endline - 1,
-				character = lint.location.endcolumn - 1,
-			}),
+		start = table.freeze({
+			line = location.beginLine - 1,
+			character = location.beginColumn - 1,
 		}),
+		["end"] = table.freeze({
+			line = location.endLine - 1,
+			character = location.endColumn - 1,
+		}),
+	})
+end
+
+function lsp.diagnostic(lint: lintTypes.LintViolation): lspTypes.Diagnostic
+	return table.freeze({
+		range = getRange(lint.location),
 		severity = severity(lint.severity),
 		code = lint.lintname,
-		source = "lute lint", -- LUAUFIX: Errors because this isn't inferred as a singleton
+		codeDescription = lint.target,
+		source = "lute lint" :: "lute lint", -- LUAUFIX: Annotation needed, otherwise this errors because string isn't inferred as a singleton
 		message = lint.message,
 		tags = if lint.tags then table.freeze(tableext.map(lint.tags, tag)) else nil,
+		suggestedfix = if lint.suggestedfix
+			then table.freeze({
+				fix = lint.suggestedfix.fix,
+				range = getRange(lint.suggestedfix.location or lint.location),
+			})
+			else nil,
 	})
 end
 
 local function workspaceDocumentDiagnosticReport(
-	path: pathLib.path,
+	path: pathLib.Path,
 	violations: { lintTypes.LintViolation }
 ): lspTypes.WorkspaceDocumentDiagnosticReport
 	local report = { items = {}, uri = pathLib.format(path) }
 	for _, violation in violations do
-		table.insert(report.items, diagnostic(violation))
+		table.insert(report.items, lsp.diagnostic(violation))
 	end
 	return table.freeze(report)
 end
 
 function lsp.workspaceDiagnosticReport(
-	violations: { [pathLib.path]: { lintTypes.LintViolation } }
+	violations: { [pathLib.Path]: { lintTypes.LintViolation } }
 ): lspTypes.WorkspaceDiagnosticReport
 	local report = {
 		items = {},

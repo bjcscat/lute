@@ -1,9 +1,11 @@
 #include "lute/lutevfs.h"
 
+#include "lute/common.h"
 #include "lute/crypto.h"
 #include "lute/fs.h"
 #include "lute/io.h"
 #include "lute/luau.h"
+#include "lute/lutemodules.h"
 #include "lute/modulepath.h"
 #include "lute/net.h"
 #include "lute/process.h"
@@ -61,36 +63,38 @@ NavigationStatus LuteVfs::resetToPath(const std::string& path)
 
 NavigationStatus LuteVfs::toParent()
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     return modulePath->toParent();
 }
 
 NavigationStatus LuteVfs::toChild(const std::string& name)
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     return modulePath->toChild(name);
 }
 
 bool LuteVfs::isModulePresent() const
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     ResolvedRealPath result = modulePath->getRealPath();
-    LUAU_ASSERT(result.status == NavigationStatus::Success);
+    LUTE_ASSERT(result.status == NavigationStatus::Success);
     return result.type == ResolvedRealPath::PathType::File;
 }
 
 std::string LuteVfs::getIdentifier() const
 {
-    LUAU_ASSERT(modulePath);
+    LUTE_ASSERT(modulePath);
     ResolvedRealPath result = modulePath->getRealPath();
-    LUAU_ASSERT(result.status == NavigationStatus::Success);
+    LUTE_ASSERT(result.status == NavigationStatus::Success);
     return result.realPath;
 }
 
 std::optional<std::string> LuteVfs::getContents(const std::string& path) const
 {
-    // Lute modules have no source code.
-    return "";
+    LuteModuleResult result = getLuteModule(path);
+    if (result.type == LuteModuleType::Module)
+        return std::string(result.contents);
+    return std::nullopt;
 }
 
 ConfigStatus LuteVfs::getConfigStatus() const

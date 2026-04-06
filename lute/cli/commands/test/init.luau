@@ -1,3 +1,4 @@
+local cli = require("@batteries/cli")
 local finder = require("@self/finder")
 local filter = require("@self/filter")
 local luau = require("@std/luau")
@@ -5,55 +6,15 @@ local path = require("@std/path")
 local ps = require("@std/process")
 local testtypes = require("@std/test/types")
 local runner = require("@std/test/runner")
-local reporter = require("@std/test/reporter")
+local reporter = require("@self/reporter")
 local test = require("@std/test")
+local snaprunner = require("@self/snap/runner")
+local updater = require("@self/snap/updater")
 
-local function printHelp()
-	print([[
-Usage: lute test [OPTIONS] [PATHS...]
-
-Run tests discovered in .test.luau and .spec.luau files.
-
-OPTIONS:
-  -h, --help              Show this help message
-  --list                  List all discovered test cases without running them
-  -s, --suite=SUITE       Run only tests in the specified suite
-  -c, --case=CASE         Run only test cases matching the specified name
-
-PATHS:
-  Directories or files to search for tests (default: ./tests)
-
-EXAMPLES:
-  lute test                                    Run all tests in ./tests
-  lute test --list                             List all test cases
-  lute test -s MyTestSuite                     Run all tests in MyTestSuite
-  lute test --suite MyTestSuite --case mytest  Run specific test in suite
-  lute test --case "some case"                 Run all test cases named "some case"
-]])
-end
-
---[[
- Any of the tests we load will use the instance of std/test initialized in this module (cli/commands/test/init.luau)
- Tests that run via lute test don't need to explicitly call test.run, so we'll pass an empty run function so that we don't
- execute any tests, while giving us time to remove unecessary run() calls (doing this because this doesn't support running tests just yet)
- The reason we have to inject a custom require here is because each `loadbypath` on a test file will return the "@std/test" instance provided by
- the EmbeddedStdVFS. However, running `lute test` from the root of the lute repo will use a distinct @std/test instance, which is provided by the .luaurc when running
- this file, which means the test environment won't get populated. The consequence of this is that `lute test` will work perfectly everywhere except inside of
- the lute repo, which sucks. Intercepting @std/test requires works correctly and ensures that the correct @std/test instance gets populated
-]]
---
-local function lutetestrequire(req: string)
-	if req == "@std/test" then
-		return table.freeze({ case = test.case, suite = test.suite, run = function() end })
-	end
-	return require(req) :: any
-end
-
-local function loadtests(testfiles: { path.path })
-	local fenv: { [unknown]: unknown } = setmetatable({ ["require"] = lutetestrequire }, { __index = _G })
+local function loadtests(testfiles: { path.Path })
 	-- Load all test files first
 	for _, p in testfiles do
-		local success, err = pcall(luau.loadbypath, p, fenv)
+		local success, err = pcall(luau.loadModule, p, nil)
 
 		if not success then
 			print(`Error loading {path.format(p)}: {err}`)
@@ -64,11 +25,6 @@ end
 local function listtests()
 	-- Gets all registered tests using the shared test instance
 	local registered = test._registered()
-	local totalTests = #registered.anonymous
-
-	for _, suite in registered.suites do
-		totalTests += #suite.cases
-	end
 
 	print("Anonymous:")
 	for _, tc in registered.anonymous do
@@ -83,7 +39,7 @@ local function listtests()
 	end
 end
 
-local function runtests(env: testtypes.testenvironment, runner: testtypes.testrunner, reporter: testtypes.testreporter)
+local function runtests(env: testtypes.TestEnvironment, runner: testtypes.TestRunner, reporter: testtypes.TestReporter)
 	local result = runner(env)
 
 	reporter(result)
@@ -93,56 +49,60 @@ local function runtests(env: testtypes.testenvironment, runner: testtypes.testru
 	ps.exit(0)
 end
 
+local function runsnapshots(searchpaths: { string }, update: boolean, interactive: boolean)
+	local files = finder.findsnapfiles(searchpaths)
+
+	if #files == 0 then
+		print("No snapshot files (*.snap.luau) found.")
+		ps.exit(0)
+		return
+	end
+
+	local result = snaprunner.runsnapshots(files)
+	reporter.snap(result)
+	updater.updatesnapshot(result, update, interactive)
+end
+
 local function main(...: string)
-	local args = { ... }
-	local testPaths = {}
-	local isListMode = false
-	local suiteName: string? = nil
-	local caseName: string? = nil
+	local args = cli.parser()
 
-	local i = 1
-	while i <= #args do
-		local arg = args[i]
+	args:add("help", "flag", { help = "Show this help message", aliases = { "h" } })
+	args:add("list", "flag", { help = "List all discovered test cases without running them" })
+	args:add("suite", "option", { help = "Run only tests in the specified suite", aliases = { "s" } })
+	args:add("case", "option", { help = "Run only test cases matching the specified name", aliases = { "c" } })
+	args:add("interactive", "flag", { help = "Interactively accept/reject snapshot changes", aliases = { "i" } })
+	args:add("update", "flag", { help = "Auto-accept all snapshot changes", aliases = { "u" } })
 
-		if arg == "-h" or arg == "--help" then
-			printHelp()
-			return
-		elseif arg == "--list" then
-			isListMode = true
-			i += 1
-		elseif arg == "-s" or arg == "--suite" then
-			i += 1
-			if i <= #args then
-				suiteName = args[i]
-				i += 1
-			else
-				print(`Error: {arg} requires a value`)
-				ps.exit(1)
-			end
-		elseif arg == "-c" or arg == "--case" then
-			i += 1
-			if i <= #args then
-				caseName = args[i]
-				i += 1
-			else
-				print(`Error: {arg} requires a value`)
-				ps.exit(1)
-			end
+	args:parse({ ... })
+
+	if args:has("help") then
+		print(args:help())
+		return
+	end
+
+	local forwarded = args:forwarded()
+	-- Check if this is a snapshot subcommand
+	if forwarded and #forwarded > 0 and forwarded[1] == "snapshots" then
+		if #forwarded == 1 then
+			runsnapshots({ "./tests" }, args:has("update"), args:has("interactive"))
 		else
-			table.insert(testPaths, arg)
-			i += 1
+			local searchpaths = {}
+			for idx = 2, #forwarded do
+				table.insert(searchpaths, forwarded[idx])
+			end
+			runsnapshots(searchpaths, args:has("update"), args:has("interactive"))
 		end
 	end
 
-	local searchpath = if #testPaths > 0 then testPaths else { "./tests" }
+	local searchpath = if forwarded and #forwarded > 0 then forwarded else { "./" }
 	loadtests(finder.findtestfiles(searchpath))
 
-	if isListMode then
+	if args:has("list") then
 		listtests()
 	else
-		local env = test._registered()
-		local filteredEnv = filter.filtertests(env, suiteName, caseName)
-		runtests(filteredEnv, runner.run, reporter.simple)
+		local env = test._registered() :: testtypes.TestEnvironment
+		local filteredEnv = filter.filtertests(env, args:get("suite"), args:get("case"))
+		runtests(filteredEnv, runner.run, reporter.color)
 	end
 end
 

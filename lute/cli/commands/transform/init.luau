@@ -13,7 +13,7 @@ local function exhaustiveMatch(value: never): never
 end
 
 local function loadMigration(path: string): types.Migration
-	local success, loaded = pcall(luau.loadbypath, path)
+	local success, loaded = pcall(luau.loadModule, path, nil)
 	assert(success, `{path} failed to require: {loaded}`)
 	assert(loaded, `{path} is missing a return`)
 
@@ -79,7 +79,7 @@ end
 
 local function applyMigration(
 	migration: types.Migration,
-	paths: { pathLib.path },
+	paths: { pathLib.Path },
 	options: { [string]: string | boolean },
 	dryRun: boolean,
 	outputPath: string?
@@ -101,7 +101,7 @@ local function applyMigration(
 
 		print(`Applying to {pathStr}`)
 
-		local source = fs.readfiletostring(pathStr)
+		local source = fs.readFileToString(pathStr)
 
 		local parseresult = syntax.parse(source)
 
@@ -115,7 +115,7 @@ local function applyMigration(
 		-- TODO: should we wrap in pcall? For now we don't do this to preserve stack trace
 		local result = migration.transform(ctx)
 
-		local toWrite = if typeof(result) == "string" then result else printer.printfile(parseresult, result)
+		local toWrite = if typeof(result) == "string" then result else printer.printFile(parseresult, result)
 
 		if toWrite == types.DELETION_MARKER then
 			if outputFilePath then
@@ -127,9 +127,9 @@ local function applyMigration(
 		elseif not dryRun then
 			if outputFilePath then
 				assert(outputFilePath ~= nil)
-				fs.writestringtofile(outputFilePath, toWrite)
+				fs.writeStringToFile(outputFilePath, toWrite)
 			elseif toWrite ~= source then
-				fs.writestringtofile(pathStr, toWrite)
+				fs.writeStringToFile(pathStr, toWrite)
 			end
 		end
 	end

@@ -75,6 +75,20 @@ mkdir -p lute/cli/generated
 exe cp ./tools/templates/cli_impl.cpp ./lute/cli/generated/commands.cpp
 exe cp ./tools/templates/cli_header.h ./lute/cli/generated/commands.h
 
+# place empty versions of the batteries library
+rm -rf lute/batteries/generated
+mkdir -p lute/batteries/generated
+
+exe cp ./tools/templates/batteries_impl.cpp ./lute/batteries/generated/batteries.cpp
+exe cp ./tools/templates/batteries_header.h ./lute/batteries/generated/batteries.h
+
+# place empty versions of the lute definitions
+rm -rf lute/definitions/src/generated
+mkdir -p lute/definitions/src/generated
+
+exe cp ./tools/templates/definitions_impl.cpp ./lute/definitions/src/generated/modules.cpp
+exe cp ./tools/templates/definitions_header.h ./lute/definitions/src/generated/modules.h
+
 ## configure the build system for lute0
 os_type="$(uname)"
 BUILD_ROOT=""

@@ -29,7 +29,7 @@ end
 
 function compFuncs.exprIndexExprsSame(a: syntax.AstExprIndexExpr, b: syntax.AstExprIndexExpr): boolean
 	if a.index.tag == "string" and b.index.tag == "string" then
-		if a.index.text ~= b.index.text then
+		if a.index.token.text ~= b.index.token.text then
 			return false
 		else
 			return compFuncs.refExprsSame(a.expression, b.expression)
@@ -59,10 +59,10 @@ end
 
 -- Report instances of attempted swaps like:
 -- a = b; b = a
-local function lint(ast: syntax.AstStatBlock, sourcepath: path.path): { lintTypes.LintViolation }
+local function lint(ast: syntax.AstStatBlock, sourcepath: path.Path?): { lintTypes.LintViolation }
 	local violations = {}
 
-	local nodes = query.findallfromroot(ast, utils.isStatBlock).nodes
+	local nodes = query.findAllFromRoot(ast, utils.isStatBlock).nodes
 
 	for _, block in nodes do
 		for i = 1, #block.statements - 1 do
@@ -80,18 +80,27 @@ local function lint(ast: syntax.AstStatBlock, sourcepath: path.path): { lintType
 			local nextVar, nextVal = nextStat.variables[1].node, nextStat.values[1].node
 
 			if compFuncs.refExprsSame(currVar, nextVal) and compFuncs.refExprsSame(nextVar, currVal) then
-				table.insert(violations, { -- LUAUFIX: severity isn't inferred as a singleton, so table.insert is mad
-					lintname = name,
-					location = syntax.span.create({
-						beginline = currStat.location.beginline,
-						begincolumn = currStat.location.begincolumn,
-						endline = nextStat.location.endline,
-						endcolumn = nextStat.location.endcolumn,
-					}),
-					message = message,
-					severity = "warning",
-					sourcepath = sourcepath,
-				})
+				-- FIXME(Luau):
+				--	1. We don't infer "warning" as a singleton.
+				--	2. Bidirectional type checking of tables does not kick in.
+				table.insert(
+					violations,
+					{
+						lintname = name,
+						location = syntax.span.create({
+							beginLine = currStat.location.beginLine,
+							beginColumn = currStat.location.beginColumn,
+							endLine = nextStat.location.endLine,
+							endColumn = nextStat.location.endColumn,
+						}),
+						message = message,
+						severity = "warning",
+						sourcepath = sourcepath,
+						-- We should be able to remove this assertion
+						-- once we can bidirectionally infer instantiated
+						-- generic functions.
+					} :: lintTypes.LintViolation
+				)
 			end
 		end
 	end

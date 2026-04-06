@@ -2,9 +2,9 @@ local net = require("@lute/net")
 local test = require("@std/test")
 
 test.suite("NetTestSuite", function(suite)
-	suite:case("serve_locally_and_request", function(assert)
+	suite:case("serveLocallyAndRequest", function(assert)
 		local server = net.serve({
-			handler = function(req: net.ReceivedRequest): net.ServerResponse
+			handler = function(_req: net.ReceivedRequest): net.ServerResponse
 				return {
 					status = 200,
 					body = "Hello, World!",
@@ -22,5 +22,3 @@ test.suite("NetTestSuite", function(suite)
 		server.close()
 	end)
 end)
-
-test.run()

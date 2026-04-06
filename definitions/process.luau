@@ -1,3 +1,4 @@
+-- lute-lint-global-ignore(unused_variable)
 export type StdioKind = "default" | "inherit" | "none"
 
 export type ProcessRunOptions = {
@@ -26,6 +27,7 @@ export type ProcessResult = {
 
 local process = {}
 
+process.args = {} :: { string }
 process.env = {} :: { [string]: string }
 
 function process.homedir(): string
@@ -48,7 +50,7 @@ function process.exit(exitcode: number): never
 	error("not implemented")
 end
 
-function process.execpath(): string
+function process.execPath(): string
 	error("not implemented")
 end
 

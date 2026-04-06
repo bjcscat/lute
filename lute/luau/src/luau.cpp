@@ -1,8 +1,9 @@
 #include "lute/luau.h"
 
+#include "lute/common.h"
 #include "lute/configresolver.h"
-#include "lute/moduleresolver.h"
-#include "lute/userdatas.h"
+#include "lute/tcmoduleresolver.h"
+#include "lute/type.h"
 
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
@@ -26,6 +27,32 @@
 
 namespace luau
 {
+
+// Recursively freezes the table at the top of the stack and any descendant tables.
+// The table must be at the top of the stack when called.
+static void deepFreeze(lua_State* L)
+{
+    if (!lua_istable(L, -1))
+        luaL_error(L, "expected table to freeze");
+
+    lua_rawcheckstack(L, 2);
+
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0)
+    {
+        // Freeze the value if it's a table
+        if (lua_istable(L, -1))
+            deepFreeze(L);
+
+        // Pop value, keep key for next iteration
+        lua_pop(L, 1);
+    }
+
+    if (lua_getreadonly(L, -1))
+        return;
+
+    lua_setreadonly(L, -1, 1);
+}
 
 struct StatResult
 {
@@ -119,8 +146,6 @@ struct Trivia
     std::string_view text;
 };
 
-// the userdata version of `Luau::Location` because exposing this as a table was, unfortunately, very impractical
-// it happens too much all over the entire AST to do reasonably.
 struct Span
 {
     uint32_t beginLine;
@@ -129,38 +154,73 @@ struct Span
     uint32_t endColumn;
 };
 
+static Span checkSpan(lua_State* L, int index)
+{
+    lua_checkstack(L, 1);
+
+    if (!lua_istable(L, index))
+        luaL_typeerror(L, index, "span");
+
+    if (lua_getfield(L, index, "beginLine") == LUA_TNIL)
+        luaL_typeerror(L, index, "span");
+    int beginLine = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    if (lua_getfield(L, index, "beginColumn") == LUA_TNIL)
+        luaL_typeerror(L, index, "span");
+    int beginColumn = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    if (lua_getfield(L, index, "endLine") == LUA_TNIL)
+        luaL_typeerror(L, index, "span");
+    int endLine = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    if (lua_getfield(L, index, "endColumn") == LUA_TNIL)
+        luaL_typeerror(L, index, "span");
+    int endColumn = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    return {static_cast<uint32_t>(beginLine), static_cast<uint32_t>(beginColumn), static_cast<uint32_t>(endLine), static_cast<uint32_t>(endColumn)};
+}
+
 static int createSpan(lua_State* L)
 {
     int argumentCount = lua_gettop(L);
     if (argumentCount != 1)
         luaL_error(L, "%s: expected 1 argument, but got %d", kSpanCreateName, argumentCount);
 
-    // read all three of the required fields out of the table
-    lua_getfield(L, 1, "beginline");
-    lua_getfield(L, 1, "begincolumn");
-    lua_getfield(L, 1, "endline");
-    lua_getfield(L, 1, "endcolumn");
+    lua_checkstack(L, 2);
 
-    double beginline = luaL_checknumber(L, 2);
-    double begincolumn = luaL_checknumber(L, 3);
-    double endline = luaL_checknumber(L, 4);
-    double endcolumn = luaL_checknumber(L, 5);
+    // check that the argument is compliant with the span interface!
+    Span span = checkSpan(L, 1);
 
-    Span* span = static_cast<Span*>(lua_newuserdatatagged(L, sizeof(Span), kSpanTag));
+    lua_createtable(L, 0, 4);
 
-    span->beginLine = static_cast<uint32_t>(beginline);
-    span->beginColumn = static_cast<uint32_t>(begincolumn);
-    span->endLine = static_cast<uint32_t>(endline);
-    span->endColumn = static_cast<uint32_t>(endcolumn);
+    lua_pushinteger(L, span.beginLine);
+    lua_setfield(L, -2, "beginLine");
+
+    lua_pushinteger(L, span.beginColumn);
+    lua_setfield(L, -2, "beginColumn");
+
+    lua_pushinteger(L, span.endLine);
+    lua_setfield(L, -2, "endLine");
+
+    lua_pushinteger(L, span.endColumn);
+    lua_setfield(L, -2, "endColumn");
 
     luaL_getmetatable(L, kSpanType);
     lua_setmetatable(L, -2);
+
+    lua_setreadonly(L, -1, 1);
 
     return 1;
 }
 
 static int makeSpanLibrary(lua_State* L)
 {
+    lua_checkstack(L, 2);
+
     lua_createtable(L, 0, 1);
 
     lua_pushcfunction(L, luau::createSpan, "create");
@@ -171,47 +231,20 @@ static int makeSpanLibrary(lua_State* L)
     return 1;
 }
 
-static int indexSpan(lua_State* L)
-{
-    const Span* span = static_cast<Span*>(luaL_checkudata(L, 1, kSpanType));
-
-    const char* fieldName = luaL_checkstring(L, 2);
-
-    if (std::strcmp(fieldName, "beginline") == 0)
-    {
-        lua_pushnumber(L, span->beginLine);
-        return 1;
-    }
-    else if (std::strcmp(fieldName, "begincolumn") == 0)
-    {
-        lua_pushnumber(L, span->beginColumn);
-        return 1;
-    }
-    else if (std::strcmp(fieldName, "endline") == 0)
-    {
-        lua_pushnumber(L, span->endLine);
-        return 1;
-    }
-    else if (std::strcmp(fieldName, "endcolumn") == 0)
-    {
-        lua_pushnumber(L, span->endColumn);
-        return 1;
-    }
-
-    return 0;
-}
 
 static int ltSpan(lua_State* L)
 {
-    const Span* lhs = static_cast<Span*>(luaL_checkudata(L, 1, kSpanType));
-    const Span* rhs = static_cast<Span*>(luaL_checkudata(L, 2, kSpanType));
+    Span lhs = checkSpan(L, 1);
+    Span rhs = checkSpan(L, 2);
+
+    lua_checkstack(L, 2);
 
     // Compare beginnings, and if they're equal, compare ends
-    if (lhs->beginLine < rhs->beginLine || (lhs->beginLine == rhs->beginLine && lhs->beginColumn < rhs->beginColumn))
+    if (lhs.beginLine < rhs.beginLine || (lhs.beginLine == rhs.beginLine && lhs.beginColumn < rhs.beginColumn))
         lua_pushboolean(L, 1);
-    else if (lhs->beginLine == rhs->beginLine && lhs->beginColumn == rhs->beginColumn)
+    else if (lhs.beginLine == rhs.beginLine && lhs.beginColumn == rhs.beginColumn)
     {
-        if (lhs->endLine < rhs->endLine || (lhs->endLine == rhs->endLine && lhs->endColumn < rhs->endColumn))
+        if (lhs.endLine < rhs.endLine || (lhs.endLine == rhs.endLine && lhs.endColumn < rhs.endColumn))
             lua_pushboolean(L, 1);
         else
             lua_pushboolean(L, 0);
@@ -251,7 +284,7 @@ struct AstSerialize : public Luau::AstVisitor
     Luau::NotNull<T> lookupCstNode(Luau::AstNode* astNode)
     {
         const auto cstNode = cstNodeMap.find(astNode);
-        LUAU_ASSERT(cstNode);
+        LUTE_ASSERT(cstNode);
         return Luau::NotNull{(*cstNode)->as<T>()};
     }
 
@@ -282,9 +315,9 @@ struct AstSerialize : public Luau::AstVisitor
     {
         auto beginPosition = currentPosition;
 
-        LUAU_ASSERT(currentPosition < newPos);
-        LUAU_ASSERT(currentPosition.line < lineOffsets.size());
-        LUAU_ASSERT(newPos.line < lineOffsets.size());
+        LUTE_ASSERT(currentPosition < newPos);
+        LUTE_ASSERT(currentPosition.line < lineOffsets.size());
+        LUTE_ASSERT(newPos.line < lineOffsets.size());
         size_t startOffset = lineOffsets[currentPosition.line] + currentPosition.column;
         size_t endOffset = lineOffsets[newPos.line] + newPos.column;
 
@@ -312,14 +345,14 @@ struct AstSerialize : public Luau::AstVisitor
             if (index == std::string::npos)
                 break;
         }
-        LUAU_ASSERT(currentPosition == newPos);
+        LUTE_ASSERT(currentPosition == newPos);
 
         return result;
     }
 
     std::vector<Trivia> extractTrivia(const Luau::Position& newPos)
     {
-        LUAU_ASSERT(currentPosition <= newPos);
+        LUTE_ASSERT(currentPosition <= newPos);
         if (currentPosition == newPos)
             return {};
 
@@ -334,8 +367,8 @@ struct AstSerialize : public Luau::AstVisitor
                 result.insert(result.end(), whitespace.begin(), whitespace.end());
             }
 
-            LUAU_ASSERT(comment.location.begin.line < lineOffsets.size());
-            LUAU_ASSERT(comment.location.end.line < lineOffsets.size());
+            LUTE_ASSERT(comment.location.begin.line < lineOffsets.size());
+            LUTE_ASSERT(comment.location.end.line < lineOffsets.size());
 
             size_t startOffset = lineOffsets[comment.location.begin.line] + comment.location.begin.column;
             size_t endOffset = lineOffsets[comment.location.end.line] + comment.location.end.column;
@@ -344,10 +377,10 @@ struct AstSerialize : public Luau::AstVisitor
 
             // TODO: advancePosition is more of a debug check - we can probably just set currentPosition directly here
             advancePosition(commentText);
-            LUAU_ASSERT(currentPosition == comment.location.end);
+            LUTE_ASSERT(currentPosition == comment.location.end);
 
             // TODO: currently the text includes the `--` / `--[[` characters, should it?
-            LUAU_ASSERT(comment.type != Luau::Lexeme::BrokenComment);
+            LUTE_ASSERT(comment.type != Luau::Lexeme::BrokenComment);
             auto kind = comment.type == Luau::Lexeme::Comment ? Trivia::SingleLineComment : Trivia::MultiLineComment;
             result.emplace_back(Trivia{kind, comment.location, commentText});
         }
@@ -358,7 +391,7 @@ struct AstSerialize : public Luau::AstVisitor
             result.insert(result.end(), whitespace.begin(), whitespace.end());
         }
 
-        LUAU_ASSERT(currentPosition == newPos);
+        LUTE_ASSERT(currentPosition == newPos);
 
         return result;
     }
@@ -387,15 +420,24 @@ struct AstSerialize : public Luau::AstVisitor
     {
         lua_rawcheckstack(L, 2);
 
-        Span* span = static_cast<Span*>(lua_newuserdatatagged(L, sizeof(Span), kSpanTag));
+        lua_createtable(L, 0, 4);
 
-        span->beginLine = location.begin.line + 1;
-        span->beginColumn = location.begin.column + 1;
-        span->endLine = location.end.line + 1;
-        span->endColumn = location.end.column + 1;
+        lua_pushinteger(L, location.begin.line + 1);
+        lua_setfield(L, -2, "beginLine");
+
+        lua_pushinteger(L, location.begin.column + 1);
+        lua_setfield(L, -2, "beginColumn");
+
+        lua_pushinteger(L, location.end.line + 1);
+        lua_setfield(L, -2, "endLine");
+
+        lua_pushinteger(L, location.end.column + 1);
+        lua_setfield(L, -2, "endColumn");
 
         luaL_getmetatable(L, kSpanType);
         lua_setmetatable(L, -2);
+
+        lua_setreadonly(L, -1, 1);
     }
 
     void serialize(Luau::AstName& name)
@@ -433,7 +475,7 @@ struct AstSerialize : public Luau::AstVisitor
 
                 if (local->annotation)
                 {
-                    LUAU_ASSERT(colonPosition);
+                    LUTE_ASSERT(colonPosition);
                     serializeToken(*colonPosition, ":");
                 }
                 else
@@ -458,36 +500,41 @@ struct AstSerialize : public Luau::AstVisitor
 
     void serialize(Luau::AstExprTable::Item& item, Luau::CstExprTable::Item* cstNode)
     {
-        LUAU_ASSERT(cstNode);
+        LUTE_ASSERT(cstNode);
 
         lua_rawcheckstack(L, 2);
 
+
         if (item.kind == Luau::AstExprTable::Item::List)
         {
-            lua_createtable(L, 0, 4);
+            lua_createtable(L, 0, 5);
             lua_pushstring(L, "list");
             lua_setfield(L, -2, "kind");
 
             lua_pushboolean(L, 1);
-            lua_setfield(L, -2, "istableitem");
+            lua_setfield(L, -2, "isTableItem");
+
+            withLocation(Luau::Location{item.value->location.begin, item.value->location.end});
 
             visit(item.value);
             lua_setfield(L, -2, "value");
         }
         else if (item.kind == Luau::AstExprTable::Item::Record)
         {
-            lua_createtable(L, 0, 6);
+            lua_createtable(L, 0, 7);
             lua_pushstring(L, "record");
             lua_setfield(L, -2, "kind");
 
             lua_pushboolean(L, 1);
-            lua_setfield(L, -2, "istableitem");
+            lua_setfield(L, -2, "isTableItem");
+
+            withLocation(Luau::Location{item.key->location.begin, item.value->location.end});
 
             const auto& value = item.key->as<Luau::AstExprConstantString>()->value;
             serializeToken(item.key->location.begin, std::string(value.data, value.size).data());
             lua_setfield(L, -2, "key");
 
-            LUAU_ASSERT(cstNode->equalsPosition);
+            LUTE_ASSERT(cstNode->equalsPosition);
             serializeToken(*cstNode->equalsPosition, "=");
             lua_setfield(L, -2, "equals");
 
@@ -496,25 +543,27 @@ struct AstSerialize : public Luau::AstVisitor
         }
         else if (item.kind == Luau::AstExprTable::Item::General)
         {
-            lua_createtable(L, 0, 8);
+            lua_createtable(L, 0, 9);
             lua_pushstring(L, "general");
             lua_setfield(L, -2, "kind");
 
             lua_pushboolean(L, 1);
-            lua_setfield(L, -2, "istableitem");
+            lua_setfield(L, -2, "isTableItem");
 
-            LUAU_ASSERT(cstNode->indexerOpenPosition);
+            LUTE_ASSERT(cstNode->indexerOpenPosition);
+            withLocation(Luau::Location{*cstNode->indexerOpenPosition, item.value->location.end});
+
             serializeToken(*cstNode->indexerOpenPosition, "[");
-            lua_setfield(L, -2, "indexeropen");
+            lua_setfield(L, -2, "indexerOpen");
 
             visit(item.key);
             lua_setfield(L, -2, "key");
 
-            LUAU_ASSERT(cstNode->indexerClosePosition);
+            LUTE_ASSERT(cstNode->indexerClosePosition);
             serializeToken(*cstNode->indexerClosePosition, "]");
-            lua_setfield(L, -2, "indexerclose");
+            lua_setfield(L, -2, "indexerClose");
 
-            LUAU_ASSERT(cstNode->equalsPosition);
+            LUTE_ASSERT(cstNode->equalsPosition);
             serializeToken(*cstNode->equalsPosition, "=");
             lua_setfield(L, -2, "equals");
 
@@ -543,7 +592,7 @@ struct AstSerialize : public Luau::AstVisitor
         lua_pushstring(L, Luau::toString(op).data());
     }
 
-    // preambleSize should encode the size of the fields we're setting up for _all_ nodes.
+    // preambleSize should encode the size of the fields we're setting up for _all_ nodes. It consists of tag, kind, and location.
     static const size_t preambleSize = 3;
     void serializeNodePreamble(Luau::AstNode* node, const char* tag, const char* kind)
     {
@@ -592,10 +641,10 @@ struct AstSerialize : public Luau::AstVisitor
     }
 
     // For correct trivia computation, everything must end up going through serializeToken
-    void serializeToken(Luau::Position position, const char* text, int nrec = 0)
+    void serializeToken(Luau::Position position, const char* text)
     {
         lua_rawcheckstack(L, 3);
-        lua_createtable(L, 0, nrec + 5);
+        lua_createtable(L, 0, 5);
 
         const auto trivia = extractTrivia(position);
         if (lastTokenRef != LUA_NOREF)
@@ -603,10 +652,10 @@ struct AstSerialize : public Luau::AstVisitor
             const auto [trailingTrivia, leadingTrivia] = splitTrivia(trivia);
 
             lua_getref(L, lastTokenRef);
-            LUAU_ASSERT(lua_istable(L, -1));
+            LUTE_ASSERT(lua_istable(L, -1));
 
             serializeTrivia(trailingTrivia);
-            lua_setfield(L, -2, "trailingtrivia");
+            lua_setfield(L, -2, "trailingTrivia");
             lua_pop(L, 1);
             lua_unref(L, lastTokenRef);
             lastTokenRef = LUA_NOREF;
@@ -617,8 +666,8 @@ struct AstSerialize : public Luau::AstVisitor
         {
             serializeTrivia(trivia);
         }
-        LUAU_ASSERT(lua_istable(L, -2));
-        lua_setfield(L, -2, "leadingtrivia");
+        LUTE_ASSERT(lua_istable(L, -2));
+        lua_setfield(L, -2, "leadingTrivia");
 
         size_t textLength = strlen(text);
 
@@ -631,10 +680,10 @@ struct AstSerialize : public Luau::AstVisitor
         advancePosition(text);
 
         lua_createtable(L, 0, 0);
-        lua_setfield(L, -2, "trailingtrivia");
+        lua_setfield(L, -2, "trailingTrivia");
 
-        lua_pushboolean(L, 1);
-        lua_setfield(L, -2, "istoken");
+        lua_pushstring(L, "token");
+        lua_setfield(L, -2, "kind");
 
         lastTokenRef = lua_ref(L, -1);
     }
@@ -752,8 +801,11 @@ struct AstSerialize : public Luau::AstVisitor
     }
     void serializeAttribute(Luau::AstAttr* node)
     {
-        serializeToken(node->location.begin, ("@" + std::string(node->name.value)).c_str());
         lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize); // location, kind, token
+
+        serializeToken(node->location.begin, ("@" + std::string(node->name.value)).c_str());
+        lua_setfield(L, -2, "token");
 
         lua_pushstring(L, "attribute");
         lua_setfield(L, -2, "kind");
@@ -777,45 +829,62 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "group", "expr");
 
         serializeToken(node->location.begin, "(");
-        lua_setfield(L, -2, "openparens");
+        lua_setfield(L, -2, "openParens");
 
         node->expr->visit(this);
         lua_setfield(L, -2, "expression");
 
         serializeToken(Luau::Position{node->location.end.line, node->location.end.column - 1}, ")");
-        lua_setfield(L, -2, "closeparens");
+        lua_setfield(L, -2, "closeParens");
     }
 
     void serialize(Luau::AstExprConstantNil* node)
     {
-        serializeToken(node->location.begin, "nil", preambleSize);
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 1);
+
         serializeNodePreamble(node, "nil", "expr");
+
+        serializeToken(node->location.begin, "nil");
+        lua_setfield(L, -2, "token");
     }
 
     void serialize(Luau::AstExprConstantBool* node)
     {
-        serializeToken(node->location.begin, node->value ? "true" : "false", preambleSize + 1);
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 2);
+
         serializeNodePreamble(node, "boolean", "expr");
 
         lua_pushboolean(L, node->value);
         lua_setfield(L, -2, "value");
+
+        serializeToken(node->location.begin, node->value ? "true" : "false");
+        lua_setfield(L, -2, "token");
     }
 
     void serialize(Luau::AstExprConstantNumber* node)
     {
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 2);
+
         const auto cstNode = lookupCstNode<Luau::CstExprConstantNumber>(node);
 
-        serializeToken(node->location.begin, cstNode->value.data, preambleSize + 1);
         serializeNodePreamble(node, "number", "expr");
 
         lua_pushnumber(L, node->value);
         lua_setfield(L, -2, "value");
+
+        serializeToken(node->location.begin, cstNode->value.data);
+        lua_setfield(L, -2, "token");
     }
 
     void serialize(Luau::AstExprConstantString* node)
     {
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 3);
+
         const auto cstNode = lookupCstNode<Luau::CstExprConstantString>(node);
-        serializeToken(node->location.begin, cstNode->sourceString.data, preambleSize + 2);
         serializeNodePreamble(node, "string", "expr");
 
         switch (cstNode->quoteStyle)
@@ -833,14 +902,17 @@ struct AstSerialize : public Luau::AstVisitor
             lua_pushstring(L, "interp");
             break;
         }
-        lua_setfield(L, -2, "quotestyle");
+        lua_setfield(L, -2, "quoteStyle");
 
         lua_pushnumber(L, cstNode->blockDepth);
-        lua_setfield(L, -2, "blockdepth");
+        lua_setfield(L, -2, "blockDepth");
+
+        serializeToken(node->location.begin, cstNode->sourceString.data);
+        lua_setfield(L, -2, "token");
 
         // Unlike normal tokens, string content contains quotation marks that were not included during advancement
         // For simplicity, lets set the current position manually
-        LUAU_ASSERT(currentPosition <= node->location.end);
+        LUTE_ASSERT(currentPosition <= node->location.end);
         currentPosition = node->location.end;
     }
 
@@ -874,8 +946,13 @@ struct AstSerialize : public Luau::AstVisitor
 
     void serialize(Luau::AstExprVarargs* node)
     {
-        serializeToken(node->location.begin, "...", preambleSize);
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 1);
+
         serializeNodePreamble(node, "vararg", "expr");
+
+        serializeToken(node->location.begin, "...");
+        lua_setfield(L, -2, "token");
     }
 
     void serialize(Luau::AstExprCall* node)
@@ -894,7 +971,7 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(*cstNode->openParens, "(");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "openparens");
+        lua_setfield(L, -2, "openParens");
 
         serializePunctuated(node->args, cstNode->commaPositions, ",");
         lua_setfield(L, -2, "arguments");
@@ -909,7 +986,35 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(*cstNode->closeParens, ")");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "closeparens");
+        lua_setfield(L, -2, "closeParens");
+    }
+
+    void serialize(Luau::AstExprInstantiate* node)
+    {
+        const auto& cstNode = lookupCstNode<Luau::CstExprExplicitTypeInstantiation>(node)->instantiation;
+
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 6);
+
+        serializeNodePreamble(node, "instantiate", "expr");
+
+        node->expr->visit(this);
+        lua_setfield(L, -2, "expr");
+
+        serializeToken(cstNode.leftArrow1Position, "<");
+        lua_setfield(L, -2, "leftArrow1");
+
+        serializeToken(cstNode.leftArrow2Position, "<");
+        lua_setfield(L, -2, "leftArrow2");
+
+        serializePunctuated(node->typeArguments, cstNode.commaPositions, ",");
+        lua_setfield(L, -2, "typeArguments");
+
+        serializeToken(cstNode.rightArrow1Position, ">");
+        lua_setfield(L, -2, "rightArrow1");
+
+        serializeToken(cstNode.rightArrow2Position, ">");
+        lua_setfield(L, -2, "rightArrow2");
     }
 
     void serialize(Luau::AstExprIndexName* node)
@@ -928,7 +1033,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeToken(node->indexLocation.begin, node->index.value);
         lua_setfield(L, -2, "index");
         serialize(node->indexLocation);
-        lua_setfield(L, -2, "indexlocation");
+        lua_setfield(L, -2, "indexLocation");
     }
 
     void serialize(Luau::AstExprIndexExpr* node)
@@ -944,36 +1049,78 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "expression");
 
         serializeToken(cstNode->openBracketPosition, "[");
-        lua_setfield(L, -2, "openbrackets");
+        lua_setfield(L, -2, "openBrackets");
 
         node->index->visit(this);
         lua_setfield(L, -2, "index");
 
         serializeToken(cstNode->closeBracketPosition, "]");
-        lua_setfield(L, -2, "closebrackets");
+        lua_setfield(L, -2, "closeBrackets");
     }
 
-    void serializeFunctionBody(Luau::AstExprFunction* node)
+    enum FunctionSerializationState
     {
+        AttributesAndFunctionKeywordSerialized,
+        FunctionKeywordSerialized,
+        NothingSerialized
+    };
+
+    // Serialization needs to happen in program-lexical order, so attributes and function keyword might have been serialized already
+    void serialize(Luau::AstExprFunction* node, FunctionSerializationState state = NothingSerialized)
+    {
+        lua_rawcheckstack(L, 3);
+        lua_createtable(L, 0, preambleSize + 17);
+
+        serializeNodePreamble(node, "function", "expr");
+
         const auto cstNode = lookupCstNode<Luau::CstExprFunction>(node);
 
-        lua_rawcheckstack(L, 3);
-        lua_createtable(L, 0, 15);
+        switch (state)
+        {
+        case AttributesAndFunctionKeywordSerialized:
+            // Attributes and function keyword are on the stack, so we just need to set them in the function expr table
+            // This is only called from serialize AstStatFunction or AstStatLocalFunction, so we assume the stack has the following structure:
+            // -3: attributes
+            // -2: functionKeyword
+            // -1: function expr table (created above)
+            lua_insert(L, -3);
+            lua_setfield(L, -3, "functionKeyword");
+            lua_setfield(L, -2, "attributes");
+            break;
+        case FunctionKeywordSerialized:
+            // Function keyword is on the stack, so we just need to set it in the function expr table
+            // This is only called from serialize AstStatTypeFunction, so we assume the stack has the following structure:
+            // -2: functionKeyword
+            // -1: function expr table (created above)
+            lua_insert(L, -2);
+            lua_setfield(L, -2, "functionKeyword");
+
+            lua_newtable(L);
+            lua_setfield(L, -2, "attributes");
+            break;
+        case NothingSerialized:
+            serializeAttributes(node->attributes);
+            lua_setfield(L, -2, "attributes");
+
+            serializeToken(cstNode->functionKeywordPosition, "function");
+            lua_setfield(L, -2, "functionKeyword");
+            break;
+        }
 
         if (node->generics.size > 0 || node->genericPacks.size > 0)
         {
             serializeToken(cstNode->openGenericsPosition, "<");
-            lua_setfield(L, -2, "opengenerics");
+            lua_setfield(L, -2, "openGenerics");
 
             auto commas = cstNode->genericsCommaPositions;
             serializePunctuated(node->generics, commas, ",");
             lua_setfield(L, -2, "generics");
 
             serializePunctuated(node->genericPacks, splitArray(commas, node->generics.size), ",");
-            lua_setfield(L, -2, "genericpacks");
+            lua_setfield(L, -2, "genericPacks");
 
             serializeToken(cstNode->closeGenericsPosition, ">");
-            lua_setfield(L, -2, "closegenerics");
+            lua_setfield(L, -2, "closeGenerics");
         }
 
         if (node->self)
@@ -985,7 +1132,7 @@ struct AstSerialize : public Luau::AstVisitor
         if (node->argLocation)
         {
             serializeToken(node->argLocation->begin, "(");
-            lua_setfield(L, -2, "openparens");
+            lua_setfield(L, -2, "openParens");
         }
 
         serializePunctuated(node->args, cstNode->argsCommaPositions, ",", cstNode->argsAnnotationColonPositions);
@@ -1001,7 +1148,7 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(cstNode->varargAnnotationColonPosition, ":");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "varargcolon");
+        lua_setfield(L, -2, "varargColon");
 
         if (node->varargAnnotation)
         {
@@ -1012,50 +1159,31 @@ struct AstSerialize : public Luau::AstVisitor
         }
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "varargannotation");
+        lua_setfield(L, -2, "varargAnnotation");
 
         if (node->argLocation)
         {
             serializeToken(Luau::Position{node->argLocation->end.line, node->argLocation->end.column - 1}, ")");
-            lua_setfield(L, -2, "closeparens");
+            lua_setfield(L, -2, "closeParens");
         }
 
         if (node->returnAnnotation)
             serializeToken(cstNode->returnSpecifierPosition, ":");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "returnspecifier");
+        lua_setfield(L, -2, "returnSpecifier");
 
         if (node->returnAnnotation)
             node->returnAnnotation->visit(this);
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "returnannotation");
+        lua_setfield(L, -2, "returnAnnotation");
 
         node->body->visit(this);
         lua_setfield(L, -2, "body");
 
         serializeToken(node->body->location.end, "end");
-        lua_setfield(L, -2, "endkeyword");
-    }
-
-    void serialize(Luau::AstExprFunction* node)
-    {
-        lua_rawcheckstack(L, 3);
-        lua_createtable(L, 0, preambleSize + 3);
-
-        serializeNodePreamble(node, "function", "expr");
-
-        serializeAttributes(node->attributes);
-        lua_setfield(L, -2, "attributes");
-
-        const auto cstNode = lookupCstNode<Luau::CstExprFunction>(node);
-
-        serializeToken(cstNode->functionKeywordPosition, "function");
-        lua_setfield(L, -2, "functionkeyword");
-
-        serializeFunctionBody(node);
-        lua_setfield(L, -2, "body");
+        lua_setfield(L, -2, "endKeyword");
     }
 
     void serialize(Luau::AstExprTable* node)
@@ -1068,7 +1196,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "table", "expr");
 
         serializeToken(node->location.begin, "{");
-        lua_setfield(L, -2, "openbrace");
+        lua_setfield(L, -2, "openBrace");
 
         lua_createtable(L, node->items.size, 0);
         for (size_t i = 0; i < node->items.size; i++)
@@ -1079,7 +1207,7 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "entries");
 
         serializeToken(Luau::Position{node->location.end.line, node->location.end.column - 1}, "}");
-        lua_setfield(L, -2, "closebrace");
+        lua_setfield(L, -2, "closeBrace");
     }
 
     void serialize(Luau::AstExprUnary* node)
@@ -1105,14 +1233,14 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "binary", "expr");
 
         node->left->visit(this);
-        lua_setfield(L, -2, "lhsoperand");
+        lua_setfield(L, -2, "lhsOperand");
 
         const auto cstNode = lookupCstNode<Luau::CstExprOp>(node);
         serializeToken(cstNode->opPosition, Luau::toString(node->op).data());
         lua_setfield(L, -2, "operator");
 
         node->right->visit(this);
-        lua_setfield(L, -2, "rhsoperand");
+        lua_setfield(L, -2, "rhsOperand");
     }
 
     void serialize(Luau::AstExprTypeAssertion* node)
@@ -1143,7 +1271,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "conditional", "expr");
 
         serializeToken(node->location.begin, "if");
-        lua_setfield(L, -2, "ifkeyword");
+        lua_setfield(L, -2, "ifKeyword");
 
         node->condition->visit(this);
         lua_setfield(L, -2, "condition");
@@ -1151,13 +1279,13 @@ struct AstSerialize : public Luau::AstVisitor
         if (node->hasThen)
         {
             serializeToken(cstNode->thenPosition, "then");
-            lua_setfield(L, -2, "thenkeyword");
+            lua_setfield(L, -2, "thenKeyword");
 
             node->trueExpr->visit(this);
         }
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "thenexpr");
+        lua_setfield(L, -2, "thenExpr");
 
         lua_createtable(L, 0, preambleSize + 4);
         int i = 0;
@@ -1169,7 +1297,7 @@ struct AstSerialize : public Luau::AstVisitor
             cstNode = lookupCstNode<Luau::CstExprIfElse>(node);
 
             serializeToken(node->location.begin, "elseif");
-            lua_setfield(L, -2, "elseifkeyword");
+            lua_setfield(L, -2, "elseIfKeyword");
 
             node->condition->visit(this);
             lua_setfield(L, -2, "condition");
@@ -1177,12 +1305,12 @@ struct AstSerialize : public Luau::AstVisitor
             if (node->hasThen)
             {
                 serializeToken(cstNode->thenPosition, "then");
-                lua_setfield(L, -2, "thenkeyword");
+                lua_setfield(L, -2, "thenKeyword");
                 node->trueExpr->visit(this);
             }
             else
                 lua_pushnil(L);
-            lua_setfield(L, -2, "thenexpr");
+            lua_setfield(L, -2, "thenExpr");
 
             lua_rawseti(L, -2, i + 1);
             i++;
@@ -1192,12 +1320,12 @@ struct AstSerialize : public Luau::AstVisitor
         if (node->hasElse)
         {
             serializeToken(cstNode->elsePosition, "else");
-            lua_setfield(L, -2, "elsekeyword");
+            lua_setfield(L, -2, "elseKeyword");
             node->falseExpr->visit(this);
         }
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "elseexpr");
+        lua_setfield(L, -2, "elseExpr");
     }
 
     void serialize(Luau::AstExprInterpString* node)
@@ -1257,19 +1385,41 @@ struct AstSerialize : public Luau::AstVisitor
 
         if (cstDo)
         {
-            lua_rawcheckstack(L, 2);
+            lua_rawcheckstack(L, 3);
             lua_createtable(L, 0, preambleSize + 3);
 
             serializeNodePreamble(node, "do", "stat");
 
             serializeToken(node->location.begin, "do");
-            lua_setfield(L, -2, "dokeyword");
+            lua_setfield(L, -2, "doKeyword");
+
+            // In lieu of a C++ AstStatBlock object to recurse on, manually construct a Luau AstStatBlock table
+            lua_createtable(L, 0, preambleSize + 1);
+
+            lua_pushstring(L, "block");
+            lua_setfield(L, -2, "tag");
+
+            lua_pushstring(L, "stat");
+            lua_setfield(L, -2, "kind");
+
+            Luau::Location blockLocation;
+            if (node->body.size > 0)
+            {
+                blockLocation.begin = node->body.data[0]->location.begin;
+                blockLocation.end = node->body.data[node->body.size - 1]->location.end;
+            }
+            else
+                blockLocation = node->location;
+
+            withLocation(blockLocation);
 
             serializeStats(node->body);
+            lua_setfield(L, -2, "statements");
+
             lua_setfield(L, -2, "body");
 
             serializeToken(cstDo->endPosition, "end");
-            lua_setfield(L, -2, "endkeyword");
+            lua_setfield(L, -2, "endKeyword");
         }
         else
         {
@@ -1291,16 +1441,16 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "conditional", "stat");
 
         serializeToken(node->location.begin, "if");
-        lua_setfield(L, -2, "ifkeyword");
+        lua_setfield(L, -2, "ifKeyword");
 
         node->condition->visit(this);
         lua_setfield(L, -2, "condition");
 
         serializeToken(node->thenLocation->begin, "then");
-        lua_setfield(L, -2, "thenkeyword");
+        lua_setfield(L, -2, "thenKeyword");
 
         node->thenbody->visit(this);
-        lua_setfield(L, -2, "thenblock");
+        lua_setfield(L, -2, "thenBlock");
 
         lua_createtable(L, 0, 0);
         int i = 0;
@@ -1310,16 +1460,16 @@ struct AstSerialize : public Luau::AstVisitor
 
             auto elseif = node->elsebody->as<Luau::AstStatIf>();
             serializeToken(elseif->location.begin, "elseif");
-            lua_setfield(L, -2, "elseifkeyword");
+            lua_setfield(L, -2, "elseIfKeyword");
 
             elseif->condition->visit(this);
             lua_setfield(L, -2, "condition");
 
             serializeToken(elseif->thenLocation->begin, "then");
-            lua_setfield(L, -2, "thenkeyword");
+            lua_setfield(L, -2, "thenKeyword");
 
             elseif->thenbody->visit(this);
-            lua_setfield(L, -2, "thenblock");
+            lua_setfield(L, -2, "thenBlock");
 
             lua_rawseti(L, -2, i + 1);
             node = elseif;
@@ -1329,26 +1479,26 @@ struct AstSerialize : public Luau::AstVisitor
 
         if (node->elsebody)
         {
-            LUAU_ASSERT(node->elseLocation);
+            LUTE_ASSERT(node->elseLocation);
             serializeToken(node->elseLocation->begin, "else");
-            lua_setfield(L, -2, "elsekeyword");
+            lua_setfield(L, -2, "elseKeyword");
 
             node->elsebody->visit(this);
-            lua_setfield(L, -2, "elseblock");
+            lua_setfield(L, -2, "elseBlock");
 
             serializeToken(node->elsebody->location.end, "end");
-            lua_setfield(L, -2, "endkeyword");
+            lua_setfield(L, -2, "endKeyword");
         }
         else
         {
             lua_pushnil(L);
-            lua_setfield(L, -2, "elsekeyword");
+            lua_setfield(L, -2, "elseKeyword");
 
             lua_pushnil(L);
-            lua_setfield(L, -2, "elseblock");
+            lua_setfield(L, -2, "elseBlock");
 
             serializeToken(node->thenbody->location.end, "end");
-            lua_setfield(L, -2, "endkeyword");
+            lua_setfield(L, -2, "endKeyword");
         }
     }
 
@@ -1360,7 +1510,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "while", "stat");
 
         serializeToken(node->location.begin, "while");
-        lua_setfield(L, -2, "whilekeyword");
+        lua_setfield(L, -2, "whileKeyword");
 
         node->condition->visit(this);
         lua_setfield(L, -2, "condition");
@@ -1369,13 +1519,13 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(node->doLocation.begin, "do");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "dokeyword");
+        lua_setfield(L, -2, "doKeyword");
 
         node->body->visit(this);
         lua_setfield(L, -2, "body");
 
         serializeToken(node->body->location.end, "end");
-        lua_setfield(L, -2, "endkeyword");
+        lua_setfield(L, -2, "endKeyword");
     }
 
     void serializeStat(Luau::AstStatRepeat* node)
@@ -1386,14 +1536,14 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "repeat", "stat");
 
         serializeToken(node->location.begin, "repeat");
-        lua_setfield(L, -2, "repeatkeyword");
+        lua_setfield(L, -2, "repeatKeyword");
 
         node->body->visit(this);
         lua_setfield(L, -2, "body");
 
         auto cstNode = lookupCstNode<Luau::CstStatRepeat>(node);
         serializeToken(cstNode->untilPosition, "until");
-        lua_setfield(L, -2, "untilkeyword");
+        lua_setfield(L, -2, "untilKeyword");
 
         node->condition->visit(this);
         lua_setfield(L, -2, "condition");
@@ -1402,15 +1552,23 @@ struct AstSerialize : public Luau::AstVisitor
     void serializeStat(Luau::AstStatBreak* node)
     {
         lua_rawcheckstack(L, 2);
-        serializeToken(node->location.begin, "break", preambleSize);
+        lua_createtable(L, 0, preambleSize + 1);
+
         serializeNodePreamble(node, "break", "stat");
+
+        serializeToken(node->location.begin, "break");
+        lua_setfield(L, -2, "token");
     }
 
     void serializeStat(Luau::AstStatContinue* node)
     {
         lua_rawcheckstack(L, 2);
-        serializeToken(node->location.begin, "continue", preambleSize);
+        lua_createtable(L, 0, preambleSize + 1);
+
         serializeNodePreamble(node, "continue", "stat");
+
+        serializeToken(node->location.begin, "continue");
+        lua_setfield(L, -2, "token");
     }
 
     void serializeStat(Luau::AstStatReturn* node)
@@ -1421,7 +1579,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "return", "stat");
 
         serializeToken(node->location.begin, "return");
-        lua_setfield(L, -2, "returnkeyword");
+        lua_setfield(L, -2, "returnKeyword");
 
         const auto cstNode = lookupCstNode<Luau::CstStatReturn>(node);
         serializePunctuated(node->list, cstNode->commaPositions, ",");
@@ -1447,7 +1605,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "local", "stat");
 
         serializeToken(node->location.begin, "local");
-        lua_setfield(L, -2, "localkeyword");
+        lua_setfield(L, -2, "localKeyword");
 
         const auto cstNode = lookupCstNode<Luau::CstStatLocal>(node);
         serializePunctuated(node->vars, cstNode->varsCommaPositions, ",", cstNode->varsAnnotationColonPositions);
@@ -1473,7 +1631,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "for", "stat");
 
         serializeToken(node->location.begin, "for");
-        lua_setfield(L, -2, "forkeyword");
+        lua_setfield(L, -2, "forKeyword");
 
         serialize(node->var, /* createToken= */ true, std::make_optional(cstNode->annotationColonPosition));
         lua_setfield(L, -2, "variable");
@@ -1485,7 +1643,7 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "from");
 
         serializeToken(cstNode->endCommaPosition, ",");
-        lua_setfield(L, -2, "tocomma");
+        lua_setfield(L, -2, "toComma");
 
         node->to->visit(this);
         lua_setfield(L, -2, "to");
@@ -1493,7 +1651,7 @@ struct AstSerialize : public Luau::AstVisitor
         if (cstNode->stepCommaPosition)
         {
             serializeToken(*cstNode->stepCommaPosition, ",");
-            lua_setfield(L, -2, "stepcomma");
+            lua_setfield(L, -2, "stepComma");
         }
 
         if (node->step)
@@ -1506,13 +1664,13 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(node->doLocation.begin, "do");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "dokeyword");
+        lua_setfield(L, -2, "doKeyword");
 
         node->body->visit(this);
         lua_setfield(L, -2, "body");
 
         serializeToken(node->body->location.end, "end");
-        lua_setfield(L, -2, "endkeyword");
+        lua_setfield(L, -2, "endKeyword");
     }
 
     void serializeStat(Luau::AstStatForIn* node)
@@ -1525,7 +1683,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "forin", "stat");
 
         serializeToken(node->location.begin, "for");
-        lua_setfield(L, -2, "forkeyword");
+        lua_setfield(L, -2, "forKeyword");
 
         serializePunctuated(node->vars, cstNode->varsCommaPositions, ",", cstNode->varsAnnotationColonPositions);
         lua_setfield(L, -2, "variables");
@@ -1534,7 +1692,7 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(node->inLocation.begin, "in");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "inkeyword");
+        lua_setfield(L, -2, "inKeyword");
 
         serializePunctuated(node->values, cstNode->valuesCommaPositions, ",");
         lua_setfield(L, -2, "values");
@@ -1543,13 +1701,13 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(node->doLocation.begin, "do");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "dokeyword");
+        lua_setfield(L, -2, "doKeyword");
 
         node->body->visit(this);
         lua_setfield(L, -2, "body");
 
         serializeToken(node->body->location.end, "end");
-        lua_setfield(L, -2, "endkeyword");
+        lua_setfield(L, -2, "endKeyword");
     }
 
     void serializeStat(Luau::AstStatAssign* node)
@@ -1591,49 +1749,47 @@ struct AstSerialize : public Luau::AstVisitor
 
     void serializeStat(Luau::AstStatFunction* node)
     {
-        lua_rawcheckstack(L, 2);
-        lua_createtable(L, 0, preambleSize + 4);
+        lua_rawcheckstack(L, 4);
+        lua_createtable(L, 0, preambleSize + 2);
 
         serializeNodePreamble(node, "function", "stat");
 
         const auto cstNode = lookupCstNode<Luau::CstStatFunction>(node);
 
+        // Serialization needs to happen in program-lexical order, so we serialize attributes and function keyword first
         serializeAttributes(node->func->attributes);
-        lua_setfield(L, -2, "attributes");
 
         serializeToken(cstNode->functionKeywordPosition, "function");
-        lua_setfield(L, -2, "functionkeyword");
 
         node->name->visit(this);
-        lua_setfield(L, -2, "name");
+        lua_setfield(L, -4, "name");
 
-        serializeFunctionBody(node->func);
-        lua_setfield(L, -2, "body");
+        serialize(node->func, AttributesAndFunctionKeywordSerialized);
+        lua_setfield(L, -2, "func");
     }
 
     void serializeStat(Luau::AstStatLocalFunction* node)
     {
-        lua_rawcheckstack(L, 2);
-        lua_createtable(L, 0, preambleSize + 5);
+        lua_rawcheckstack(L, 4);
+        lua_createtable(L, 0, preambleSize + 3);
 
         serializeNodePreamble(node, "localfunction", "stat");
 
+        // Serialization needs to happen in program-lexical order, so we serialize attributes and function keyword before the func expr
         serializeAttributes(node->func->attributes);
-        lua_setfield(L, -2, "attributes");
 
         const auto cstNode = lookupCstNode<Luau::CstStatLocalFunction>(node);
 
         serializeToken(cstNode->localKeywordPosition, "local");
-        lua_setfield(L, -2, "localkeyword");
+        lua_setfield(L, -3, "localKeyword");
 
         serializeToken(cstNode->functionKeywordPosition, "function");
-        lua_setfield(L, -2, "functionkeyword");
 
         serialize(node->name);
-        lua_setfield(L, -2, "name");
+        lua_setfield(L, -4, "name");
 
-        serializeFunctionBody(node->func);
-        lua_setfield(L, -2, "body");
+        serialize(node->func, AttributesAndFunctionKeywordSerialized);
+        lua_setfield(L, -2, "func");
     }
 
     static Luau::AstArray<Luau::Position> splitArray(Luau::AstArray<Luau::Position> arr, size_t index)
@@ -1659,7 +1815,7 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "export");
 
         serializeToken(cstNode->typeKeywordPosition, "type");
-        lua_setfield(L, -2, "typetoken");
+        lua_setfield(L, -2, "typeToken");
 
         serializeToken(node->nameLocation.begin, node->name.value);
         lua_setfield(L, -2, "name");
@@ -1667,17 +1823,17 @@ struct AstSerialize : public Luau::AstVisitor
         if (node->generics.size > 0 || node->genericPacks.size > 0)
         {
             serializeToken(cstNode->genericsOpenPosition, "<");
-            lua_setfield(L, -2, "opengenerics");
+            lua_setfield(L, -2, "openGenerics");
 
             auto commas = cstNode->genericsCommaPositions;
             serializePunctuated(node->generics, commas, ",");
             lua_setfield(L, -2, "generics");
 
             serializePunctuated(node->genericPacks, splitArray(commas, node->generics.size), ",");
-            lua_setfield(L, -2, "genericpacks");
+            lua_setfield(L, -2, "genericPacks");
 
             serializeToken(cstNode->genericsClosePosition, ">");
-            lua_setfield(L, -2, "closegenerics");
+            lua_setfield(L, -2, "closeGenerics");
         }
 
         serializeToken(cstNode->equalsPosition, "=");
@@ -1689,8 +1845,8 @@ struct AstSerialize : public Luau::AstVisitor
 
     void serializeStat(Luau::AstStatTypeFunction* node)
     {
-        lua_rawcheckstack(L, 2);
-        lua_createtable(L, 0, preambleSize + 5);
+        lua_rawcheckstack(L, 3);
+        lua_createtable(L, 0, preambleSize + 4);
 
         const auto cstNode = lookupCstNode<Luau::CstStatTypeFunction>(node);
 
@@ -1706,12 +1862,11 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "type");
 
         serializeToken(cstNode->functionKeywordPosition, "function");
-        lua_setfield(L, -2, "functionkeyword");
 
         serializeToken(node->nameLocation.begin, node->name.value);
-        lua_setfield(L, -2, "name");
+        lua_setfield(L, -3, "name");
 
-        serializeFunctionBody(node->body);
+        serialize(node->body, FunctionKeywordSerialized);
         lua_setfield(L, -2, "body");
     }
 
@@ -1757,14 +1912,14 @@ struct AstSerialize : public Luau::AstVisitor
 
         if (node->prefix)
         {
-            LUAU_ASSERT(node->prefixLocation);
+            LUTE_ASSERT(node->prefixLocation);
             serializeToken(node->prefixLocation->begin, node->prefix->value);
             lua_setfield(L, -2, "prefix");
 
-            LUAU_ASSERT(cstNode);
-            LUAU_ASSERT(cstNode->prefixPointPosition);
+            LUTE_ASSERT(cstNode);
+            LUTE_ASSERT(cstNode->prefixPointPosition);
             serializeToken(*cstNode->prefixPointPosition, ".");
-            lua_setfield(L, -2, "prefixpoint");
+            lua_setfield(L, -2, "prefixPoint");
         }
 
         serializeToken(node->nameLocation.begin, node->name.value);
@@ -1772,15 +1927,15 @@ struct AstSerialize : public Luau::AstVisitor
 
         if (node->hasParameterList)
         {
-            LUAU_ASSERT(cstNode);
+            LUTE_ASSERT(cstNode);
             serializeToken(cstNode->openParametersPosition, "<");
-            lua_setfield(L, -2, "openparameters");
+            lua_setfield(L, -2, "openParameters");
 
             serializePunctuated(node->parameters, cstNode->parametersCommaPositions, ",");
             lua_setfield(L, -2, "parameters");
 
             serializeToken(cstNode->closeParametersPosition, ">");
-            lua_setfield(L, -2, "closeparameters");
+            lua_setfield(L, -2, "closeParameters");
         }
     }
 
@@ -1796,11 +1951,11 @@ struct AstSerialize : public Luau::AstVisitor
             serializeNodePreamble(node, "array", "type");
 
             serializeToken(node->location.begin, "{");
-            lua_setfield(L, -2, "openbrace");
+            lua_setfield(L, -2, "openBrace");
 
             if (node->indexer->accessLocation)
             {
-                LUAU_ASSERT(node->indexer->access != Luau::AstTableAccess::ReadWrite);
+                LUTE_ASSERT(node->indexer->access != Luau::AstTableAccess::ReadWrite);
                 serializeToken(node->indexer->accessLocation->begin, node->indexer->access == Luau::AstTableAccess::Read ? "read" : "write");
             }
             else
@@ -1811,7 +1966,7 @@ struct AstSerialize : public Luau::AstVisitor
             lua_setfield(L, -2, "type");
 
             serializeToken(Luau::Position{node->location.end.line, node->location.end.column - 1}, "}");
-            lua_setfield(L, -2, "closebrace");
+            lua_setfield(L, -2, "closeBrace");
 
             return;
         }
@@ -1822,7 +1977,7 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "table", "type");
 
         serializeToken(node->location.begin, "{");
-        lua_setfield(L, -2, "openbrace");
+        lua_setfield(L, -2, "openBrace");
 
         lua_createtable(L, cstNode->items.size, 0);
         const Luau::AstTableProp* prop = node->props.begin();
@@ -1835,14 +1990,14 @@ struct AstSerialize : public Luau::AstVisitor
 
             if (item.kind == Luau::CstTypeTable::Item::Kind::Indexer)
             {
-                LUAU_ASSERT(node->indexer);
+                LUTE_ASSERT(node->indexer);
 
                 lua_pushstring(L, "indexer");
                 lua_setfield(L, -2, "kind");
 
                 if (node->indexer->accessLocation)
                 {
-                    LUAU_ASSERT(node->indexer->access != Luau::AstTableAccess::ReadWrite);
+                    LUTE_ASSERT(node->indexer->access != Luau::AstTableAccess::ReadWrite);
                     serializeToken(node->indexer->accessLocation->begin, node->indexer->access == Luau::AstTableAccess::Read ? "read" : "write");
                 }
                 else
@@ -1850,13 +2005,13 @@ struct AstSerialize : public Luau::AstVisitor
                 lua_setfield(L, -2, "access");
 
                 serializeToken(item.indexerOpenPosition, "[");
-                lua_setfield(L, -2, "indexeropen");
+                lua_setfield(L, -2, "indexerOpen");
 
                 node->indexer->indexType->visit(this);
                 lua_setfield(L, -2, "key");
 
                 serializeToken(item.indexerClosePosition, "]");
-                lua_setfield(L, -2, "indexerclose");
+                lua_setfield(L, -2, "indexerClose");
 
                 serializeToken(item.colonPosition, ":");
                 lua_setfield(L, -2, "colon");
@@ -1885,7 +2040,7 @@ struct AstSerialize : public Luau::AstVisitor
 
                 if (prop->accessLocation)
                 {
-                    LUAU_ASSERT(prop->access != Luau::AstTableAccess::ReadWrite);
+                    LUTE_ASSERT(prop->access != Luau::AstTableAccess::ReadWrite);
                     serializeToken(prop->accessLocation->begin, prop->access == Luau::AstTableAccess::Read ? "read" : "write");
                 }
                 else
@@ -1895,11 +2050,20 @@ struct AstSerialize : public Luau::AstVisitor
                 if (item.kind == Luau::CstTypeTable::Item::Kind::StringProperty)
                 {
                     serializeToken(item.indexerOpenPosition, "[");
-                    lua_setfield(L, -2, "indexeropen");
+                    lua_setfield(L, -2, "indexerOpen");
 
                     {
-                        auto initialPosition = item.stringPosition;
-                        serializeToken(item.stringPosition, item.stringInfo->sourceString.data);
+                        lua_rawcheckstack(L, 2);
+                        lua_createtable(L, 0, preambleSize + 2);
+
+                        Luau::Position initialPosition = item.stringPosition;
+                        Luau::Position endPosition = {
+                            initialPosition.line, initialPosition.column + static_cast<uint32_t>(strlen(item.stringInfo->sourceString.data))
+                        };
+                        withLocation(Luau::Location{initialPosition, endPosition});
+
+                        lua_pushstring(L, "type");
+                        lua_setfield(L, -2, "kind");
 
                         lua_pushstring(L, "string");
                         lua_setfield(L, -2, "tag");
@@ -1913,9 +2077,12 @@ struct AstSerialize : public Luau::AstVisitor
                             lua_pushstring(L, "double");
                             break;
                         default:
-                            LUAU_ASSERT(false);
+                            LUTE_ASSERT(false);
                         }
-                        lua_setfield(L, -2, "quotestyle");
+                        lua_setfield(L, -2, "quoteStyle");
+
+                        serializeToken(item.stringPosition, item.stringInfo->sourceString.data);
+                        lua_setfield(L, -2, "token");
 
                         // Unlike normal tokens, string content contains quotation marks that were not included during advancement
                         // For simplicity, lets set the current position manually
@@ -1929,7 +2096,7 @@ struct AstSerialize : public Luau::AstVisitor
                     lua_setfield(L, -2, "key");
 
                     serializeToken(item.indexerClosePosition, "]");
-                    lua_setfield(L, -2, "indexerclose");
+                    lua_setfield(L, -2, "indexerClose");
                 }
                 else
                 {
@@ -1956,7 +2123,7 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "entries");
 
         serializeToken(Luau::Position{node->location.end.line, node->location.end.column - 1}, "}");
-        lua_setfield(L, -2, "closebrace");
+        lua_setfield(L, -2, "closeBrace");
     }
 
     void serializeType(Luau::AstTypeFunction* node)
@@ -1971,21 +2138,21 @@ struct AstSerialize : public Luau::AstVisitor
         if (node->generics.size > 0 || node->genericPacks.size > 0)
         {
             serializeToken(cstNode->openGenericsPosition, "<");
-            lua_setfield(L, -2, "opengenerics");
+            lua_setfield(L, -2, "openGenerics");
 
             auto commas = cstNode->genericsCommaPositions;
             serializePunctuated(node->generics, commas, ",");
             lua_setfield(L, -2, "generics");
 
             serializePunctuated(node->genericPacks, splitArray(commas, node->generics.size), ",");
-            lua_setfield(L, -2, "genericpacks");
+            lua_setfield(L, -2, "genericPacks");
 
             serializeToken(cstNode->closeGenericsPosition, ">");
-            lua_setfield(L, -2, "closegenerics");
+            lua_setfield(L, -2, "closeGenerics");
         }
 
         serializeToken(cstNode->openArgsPosition, "(");
-        lua_setfield(L, -2, "openparens");
+        lua_setfield(L, -2, "openParens");
 
         lua_createtable(L, node->argTypes.types.size, 0);
         for (size_t i = 0; i < node->argTypes.types.size; i++)
@@ -2030,13 +2197,13 @@ struct AstSerialize : public Luau::AstVisitor
         lua_setfield(L, -2, "vararg");
 
         serializeToken(cstNode->closeArgsPosition, ")");
-        lua_setfield(L, -2, "closeparens");
+        lua_setfield(L, -2, "closeParens");
 
         serializeToken(cstNode->returnArrowPosition, "->");
-        lua_setfield(L, -2, "returnarrow");
+        lua_setfield(L, -2, "returnArrow");
 
         node->returnTypes->visit(this);
-        lua_setfield(L, -2, "returntypes");
+        lua_setfield(L, -2, "returnTypes");
     }
 
     void serializeType(Luau::AstTypeTypeof* node)
@@ -2051,13 +2218,13 @@ struct AstSerialize : public Luau::AstVisitor
 
         const auto cstNode = lookupCstNode<Luau::CstTypeTypeof>(node);
         serializeToken(cstNode->openPosition, "(");
-        lua_setfield(L, -2, "openparens");
+        lua_setfield(L, -2, "openParens");
 
         node->expr->visit(this);
         lua_setfield(L, -2, "expression");
 
         serializeToken(cstNode->closePosition, ")");
-        lua_setfield(L, -2, "closeparens");
+        lua_setfield(L, -2, "closeParens");
     }
 
     void serializeType(Luau::AstTypeUnion* node)
@@ -2084,11 +2251,13 @@ struct AstSerialize : public Luau::AstVisitor
 
             if (node->types.data[i]->is<Luau::AstTypeOptional>())
             {
-                serializeToken(node->types.data[i]->location.begin, "?", 2);
-                lua_pushstring(L, "type");
-                lua_setfield(L, -2, "kind");
-                lua_pushstring(L, "optional");
-                lua_setfield(L, -2, "tag");
+                lua_createtable(L, 0, preambleSize + 1);
+
+                serializeNodePreamble(node->types.data[i], "optional", "type");
+
+                serializeToken(node->types.data[i]->location.begin, "?");
+                lua_setfield(L, -2, "token");
+
                 lua_setfield(L, -2, "node");
 
                 // Since this option is an optional type, the separator is always present unless it's the last type
@@ -2144,17 +2313,24 @@ struct AstSerialize : public Luau::AstVisitor
 
     void serializeType(Luau::AstTypeSingletonBool* node)
     {
-        serializeToken(node->location.begin, node->value ? "true" : "false", preambleSize + 1);
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 2);
+
         serializeNodePreamble(node, "boolean", "type");
 
         lua_pushboolean(L, node->value);
         lua_setfield(L, -2, "value");
+
+        serializeToken(node->location.begin, node->value ? "true" : "false");
+        lua_setfield(L, -2, "token");
     }
 
     void serializeType(Luau::AstTypeSingletonString* node)
     {
+        lua_rawcheckstack(L, 2);
+        lua_createtable(L, 0, preambleSize + 2);
+
         const auto cstNode = lookupCstNode<Luau::CstTypeSingletonString>(node);
-        serializeToken(node->location.begin, cstNode->sourceString.data, preambleSize + 1);
         serializeNodePreamble(node, "string", "type");
 
         switch (cstNode->quoteStyle)
@@ -2166,13 +2342,16 @@ struct AstSerialize : public Luau::AstVisitor
             lua_pushstring(L, "double");
             break;
         default:
-            LUAU_ASSERT(false);
+            LUTE_ASSERT(false);
         }
-        lua_setfield(L, -2, "quotestyle");
+        lua_setfield(L, -2, "quoteStyle");
+
+        serializeToken(node->location.begin, cstNode->sourceString.data);
+        lua_setfield(L, -2, "token");
 
         // Unlike normal tokens, string content contains quotation marks that were not included during advancement
         // For simplicity, lets set the current position manually
-        LUAU_ASSERT(currentPosition <= node->location.end);
+        LUTE_ASSERT(currentPosition <= node->location.end);
         currentPosition = node->location.end;
     }
 
@@ -2184,13 +2363,13 @@ struct AstSerialize : public Luau::AstVisitor
         serializeNodePreamble(node, "group", "type");
 
         serializeToken(node->location.begin, "(");
-        lua_setfield(L, -2, "openparens");
+        lua_setfield(L, -2, "openParens");
 
         node->type->visit(this);
         lua_setfield(L, -2, "type");
 
         serializeToken(Luau::Position{node->location.end.line, node->location.end.column - 1}, ")");
-        lua_setfield(L, -2, "closeparens");
+        lua_setfield(L, -2, "closeParens");
     }
 
     void serializeType(Luau::AstGenericType* node)
@@ -2264,7 +2443,7 @@ struct AstSerialize : public Luau::AstVisitor
             serializeToken(cstNode->openParenthesesPosition, "(");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "openparens");
+        lua_setfield(L, -2, "openParens");
 
         serializePunctuated(node->typeList.types, cstNode->commaPositions, ",");
         lua_setfield(L, -2, "types");
@@ -2273,13 +2452,13 @@ struct AstSerialize : public Luau::AstVisitor
             node->typeList.tailType->visit(this);
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "tailtype");
+        lua_setfield(L, -2, "tailType");
 
         if (cstNode->hasParentheses)
             serializeToken(cstNode->closeParenthesesPosition, ")");
         else
             lua_pushnil(L);
-        lua_setfield(L, -2, "closeparens");
+        lua_setfield(L, -2, "closeParens");
     }
 
     void serializeTypePack(Luau::AstTypePackGeneric* node)
@@ -2369,6 +2548,12 @@ struct AstSerialize : public Luau::AstVisitor
     }
 
     bool visit(Luau::AstExprCall* node) override
+    {
+        serialize(node);
+        return false;
+    }
+
+    bool visit(Luau::AstExprInstantiate* node) override
     {
         serialize(node);
         return false;
@@ -2718,10 +2903,12 @@ int luau_parse(lua_State* L)
     for (size_t i = 0; i < serializer.lineOffsets.size(); i++)
     {
         lua_pushinteger(L, i + 1);
-        lua_pushnumber(L, serializer.lineOffsets[i]);
+        lua_pushnumber(L, serializer.lineOffsets[i] + 1);
         lua_settable(L, -3);
     }
-    lua_setfield(L, -2, "lineoffsets");
+    lua_setfield(L, -2, "lineOffsets");
+
+    deepFreeze(L);
 
     return 1;
 }
@@ -2762,6 +2949,8 @@ int luau_parseexpr(lua_State* L)
 
     AstSerialize serializer{L, source, result.parseResult.cstNodeMap, result.parseResult.commentLocations};
     serializer.visit(result.parseResult.root);
+
+    deepFreeze(L);
 
     return 1;
 }
@@ -2839,11 +3028,11 @@ int load_luau(lua_State* L)
     return 1;
 }
 
-int typeofmodule_luau(lua_State* L)
+int typeofModule_luau(lua_State* L)
 {
     std::string modulePath = luaL_checkstring(L, 1);
 
-    Luau::LuteModuleResolver moduleResolver;
+    Luau::LuteTypeCheckModuleResolver moduleResolver;
     Luau::LuteConfigResolver configResolver(Luau::Mode::NoCheck);
     Luau::FrontendOptions fopts;
     fopts.retainFullTypeGraphs = true;
@@ -2861,16 +3050,9 @@ int typeofmodule_luau(lua_State* L)
         return 1;
     }
 
-    // For now, we return a string representation of the module's type, but we will expand it to some Luau data structure representation of Type
-    // (similar to the AST types) in a subsequent PR.
-    Luau::ToStringOptions opts;
-    opts.exhaustive = true;
-    opts.useLineBreaks = true;
-    opts.functionTypeArguments = true;
-    opts.scope = modulePtr->getModuleScope();
+    // Serialize and push the return type
+    serializeTypePack(L, modulePtr->returnType);
 
-    std::string moduleTypeStr = Luau::toString(modulePtr->returnType, opts);
-    lua_pushlstring(L, moduleTypeStr.c_str(), moduleTypeStr.length());
     return 1;
 }
 
@@ -2891,13 +3073,6 @@ static int initLuauLibrary(lua_State* L)
     lua_pop(L, 1);
 
     luaL_newmetatable(L, kSpanType);
-
-    // Set __type
-    lua_pushstring(L, kSpanType);
-    lua_setfield(L, -2, "__type");
-
-    lua_pushcfunction(L, luau::indexSpan, "span.__index");
-    lua_setfield(L, -2, "__index");
 
     lua_pushcfunction(L, luau::ltSpan, "span.__lt");
     lua_setfield(L, -2, "__lt");

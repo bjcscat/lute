@@ -1,70 +1,12 @@
 #include "lute/tc.h"
 
 #include "lute/configresolver.h"
-#include "lute/moduleresolver.h"
+#include "lute/tcmoduleresolver.h"
 
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Error.h"
 #include "Luau/FileUtils.h"
 #include "Luau/Frontend.h"
-
-static const std::string kLuteDefinitions = R"LUTE_TYPES(
--- Net api
-declare net: {
-    get: (string) -> string,
-    getAsync: (string) -> string,
-}
--- fs api
-declare class file end
-declare fs: {
- -- probably not the correct sig
-    open: (string, "r" | "w" | "a" | "r+" | "w+") -> file,
-    close: (file) -> (),
-    read: (file) -> string,
-    write: (file, string) -> (),
-    readfiletostring : (string) -> string,
-    writestringtofile : (string, string) -> (),
- -- is this right? I feel like we want a promise type here
-    readasync : (string) -> string,
-}
-
--- globals
-declare function spawn(path: string): any
-
-)LUTE_TYPES";
-
-struct LuteFileResolver : Luau::LuteModuleResolver
-{
-    std::optional<Luau::SourceCode> readSource(const Luau::ModuleName& name) override
-    {
-        Luau::SourceCode::Type sourceType;
-        std::optional<std::string> source = std::nullopt;
-
-        // If the module name is "-", then read source from stdin
-        if (name == "-")
-        {
-            source = readStdin();
-            sourceType = Luau::SourceCode::Script;
-        }
-        else
-        {
-            source = readFile(name);
-            sourceType = Luau::SourceCode::Module;
-        }
-
-        if (!source)
-            return std::nullopt;
-
-        return Luau::SourceCode{*source, sourceType};
-    }
-
-    std::string getHumanReadableModuleName(const Luau::ModuleName& name) const override
-    {
-        if (name == "-")
-            return "stdin";
-        return name;
-    }
-};
 
 static void report(const char* name, const Luau::Location& loc, const char* type, const char* message, LuteReporter& reporter)
 {
@@ -183,14 +125,11 @@ int typecheck(const std::vector<std::string>& sourceFilesInput, LuteReporter& re
     frontendOptions.retainFullTypeGraphs = annotate;
     frontendOptions.runLintChecks = true;
 
-    LuteFileResolver fileResolver;
+    Luau::LuteTypeCheckModuleResolver fileResolver;
     Luau::LuteConfigResolver configResolver(mode);
-    Luau::Frontend frontend(&fileResolver, &configResolver, frontendOptions);
+    Luau::Frontend frontend(Luau::SolverMode::New, &fileResolver, &configResolver, frontendOptions);
 
     Luau::registerBuiltinGlobals(frontend, frontend.globals);
-    Luau::LoadDefinitionFileResult loadResult =
-        frontend.loadDefinitionFile(frontend.globals, frontend.globals.globalScope, kLuteDefinitions, "@luau", false, false);
-    LUAU_ASSERT(loadResult.success);
     Luau::freeze(frontend.globals.globalTypes);
 
     for (const std::string& path : sourceFiles)

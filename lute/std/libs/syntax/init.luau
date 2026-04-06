@@ -3,22 +3,22 @@ local types = require("@self/types")
 
 local luau = require("@lute/luau")
 
-export type span = types.span
+export type Span = types.Span
 
 local span = {
 	create = luau.span.create,
 }
 
-function span.subsumes(haystack: span, needle: span): boolean
+function span.subsumes(haystack: Span, needle: Span): boolean
 	return (
-		if haystack.beginline == needle.beginline
-			then haystack.begincolumn <= needle.begincolumn
-			else haystack.beginline < needle.beginline
+		if haystack.beginLine == needle.beginLine
+			then haystack.beginColumn <= needle.beginColumn
+			else haystack.beginLine < needle.beginLine
 	)
 		and (
-			if haystack.endline == needle.endline
-				then haystack.endcolumn >= needle.endcolumn
-				else haystack.endline > needle.endline
+			if haystack.endLine == needle.endLine
+				then haystack.endColumn >= needle.endColumn
+				else haystack.endLine > needle.endLine
 		)
 end
 
@@ -55,21 +55,21 @@ export type AstExprVarargs = types.AstExprVarargs
 
 export type AstExprCall = types.AstExprCall
 
+export type AstExprInstantiate = types.AstExprInstantiate
+
 export type AstExprIndexName = types.AstExprIndexName
 
 export type AstExprIndexExpr = types.AstExprIndexExpr
 
-export type AstFunctionBody = types.AstFunctionBody
+export type AstExprFunction = types.AstExprFunction
 
-export type AstExprAnonymousFunction = types.AstExprAnonymousFunction
+export type AstTableExprListItem = types.AstTableExprListItem
 
-export type AstExprTableItemList = types.AstExprTableItemList
+export type AstTableExprRecordItem = types.AstTableExprRecordItem
 
-export type AstExprTableItemRecord = types.AstExprTableItemRecord
+export type AstTableExprGeneralItem = types.AstTableExprGeneralItem
 
-export type AstExprTableItemGeneral = types.AstExprTableItemGeneral
-
-export type AstExprTableItem = types.AstExprTableItem
+export type AstTableExprItem = types.AstTableExprItem
 
 export type AstExprTable = types.AstExprTable
 
@@ -151,17 +151,17 @@ export type AstTypeIntersection = types.AstTypeIntersection
 
 export type AstTypeArray = types.AstTypeArray
 
-export type AstTypeTableItemIndexer = types.AstTypeTableItemIndexer
+export type AstTableTypeItemIndexer = types.AstTableTypeItemIndexer
 
-export type AstTypeTableItemStringProperty = types.AstTypeTableItemStringProperty
+export type AstTableTypeItemStringProperty = types.AstTableTypeItemStringProperty
 
-export type AstTypeTableItemProperty = types.AstTypeTableItemProperty
+export type AstTableTypeItemProperty = types.AstTableTypeItemProperty
 
-export type AstTypeTableItem = types.AstTypeTableItem
+export type AstTableTypeItem = types.AstTableTypeItem
 
 export type AstTypeTable = types.AstTypeTable
 
-export type AstTypeFunctionParameter = types.AstTypeFunctionParameter
+export type AstFunctionTypeParameter = types.AstFunctionTypeParameter
 
 export type AstTypeFunction = types.AstTypeFunction
 
@@ -180,8 +180,8 @@ export type AstNode = types.AstNode
 export type ParseResult = types.ParseResult
 
 return table.freeze({
-	parseblock = parser.parseblock,
-	parseexpr = parser.parseexpr,
+	parseBlock = parser.parseBlock,
+	parseExpr = parser.parseExpr,
 	parse = parser.parse,
 	span = table.freeze(span),
 })

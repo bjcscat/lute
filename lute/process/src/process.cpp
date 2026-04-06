@@ -1,5 +1,6 @@
 #include "lute/process.h"
 
+#include "lute/common.h"
 #include "lute/runtime.h"
 #include "lute/uvutils.h"
 
@@ -157,7 +158,7 @@ struct ProcessOptions
     std::string cwd;
     std::string stdioKind;
     std::map<std::string, std::string> env;
-    std::string customShell;  // only used by system()
+    std::string customShell; // only used by system()
 };
 
 static void onProcessExit(uv_process_t* process, int64_t exitStatus, int termSignal)
@@ -225,7 +226,7 @@ const std::string kStdioKindNone = "none";
 int executionHelper(lua_State* L, std::vector<std::string> args, ProcessOptions opts)
 {
     auto handle = std::make_shared<ProcessHandle>();
-    handle->loop = uv_default_loop();
+    handle->loop = getRuntimeLoop(L);
     handle->self = handle;
 
     uv_process_options_t options = {};
@@ -363,7 +364,7 @@ ProcessOptions parseOptions(lua_State* L, int index)
     lua_getfield(L, index, "cwd");
     if (!lua_isnil(L, -1))
     {
-        opts.cwd = luaL_checkstring(L,-1);
+        opts.cwd = luaL_checkstring(L, -1);
     }
     lua_pop(L, 1);
 
@@ -436,13 +437,13 @@ int system(lua_State* L)
     ProcessOptions opts = parseOptions(L, 2);
 
 #ifdef _WIN32
-        const char* shellVar = "COMSPEC";
-        const char* shellFallback = "cmd.exe";
-        const char* shellArg = "/c";
+    const char* shellVar = "COMSPEC";
+    const char* shellFallback = "cmd.exe";
+    const char* shellArg = "/c";
 #else
-        const char* shellVar = "SHELL";
-        const char* shellFallback = "/bin/sh";
-        const char* shellArg = "-c";
+    const char* shellVar = "SHELL";
+    const char* shellFallback = "/bin/sh";
+    const char* shellArg = "-c";
 #endif
 
     std::string resolvedShell;
@@ -458,7 +459,7 @@ int system(lua_State* L)
         resolvedShell = opts.customShell;
     }
 
-    return executionHelper(L, { resolvedShell, shellArg, command }, opts);
+    return executionHelper(L, {resolvedShell, shellArg, command}, opts);
 }
 
 int homedir(lua_State* L)
@@ -479,7 +480,7 @@ int exitFunc(lua_State* L)
     // Exit with the provided code
     std::exit(exitCode);
 
-    LUAU_UNREACHABLE();
+    LUTE_UNREACHABLE();
 }
 
 int cwd(lua_State* L)
@@ -515,7 +516,7 @@ std::optional<std::string> getExecPath(std::string* error)
     return *cachedPath;
 }
 
-int execpath(lua_State* L)
+int execPath(lua_State* L)
 {
     std::string error;
     std::optional<std::string> execPath = getExecPath(&error);
@@ -677,7 +678,25 @@ int luteopen_process(lua_State* L)
     lua_setmetatable(L, -2);
     lua_setfield(L, -2, "env");
 
-    lua_setreadonly(L, -1, 1);
+    // Create process.args table
+    Runtime* runtime = getRuntime(L);
+    if (runtime)
+    {
+        lua_createtable(L, static_cast<int>(runtime->args.size()), 0);
+        for (int i = 0; i < static_cast<int>(runtime->args.size()); ++i)
+        {
+            lua_pushlstring(L, runtime->args[i].c_str(), runtime->args[i].size());
+            lua_rawseti(L, -2, i + 1);
+        }
+    }
+    else
+    {
+        lua_createtable(L, 0, 0);
+    }
+    lua_setreadonly(L, -1, 1); // args table
+    lua_setfield(L, -2, "args");
+
+    lua_setreadonly(L, -1, 1); // process table
 
     return 1;
 }

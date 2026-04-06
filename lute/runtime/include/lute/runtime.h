@@ -3,6 +3,9 @@
 #include "lute/ref.h"
 
 #include "Luau/Variant.h"
+#include "Luau/VecDeque.h"
+
+#include "uv.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -71,6 +74,8 @@ struct Runtime
     void addPendingToken();
     void releasePendingToken();
 
+    uv_loop_t* getEventLoop();
+
     // VM for this runtime
     std::unique_ptr<lua_State, void (*)(lua_State*)> globalState;
 
@@ -80,7 +85,10 @@ struct Runtime
     std::mutex dataCopyMutex;
     std::unique_ptr<lua_State, void (*)(lua_State*)> dataCopy;
 
-    std::vector<ThreadToContinue> runningThreads;
+    Luau::VecDeque<ThreadToContinue> runningThreads;
+
+    // CLI arguments passed after the script filename
+    std::vector<std::string> args;
 
 private:
     std::mutex continuationMutex;
@@ -92,9 +100,11 @@ private:
     std::thread runLoopThread;
 
     std::atomic<int> activeTokens;
+    uv_loop_t eventLoop;
 };
 
 Runtime* getRuntime(lua_State* L);
+uv_loop_t* getRuntimeLoop(lua_State* L);
 
 struct ResumeTokenData;
 using ResumeToken = std::shared_ptr<ResumeTokenData>;

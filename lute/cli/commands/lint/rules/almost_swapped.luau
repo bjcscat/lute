@@ -1,11 +1,14 @@
 local lintTypes = require("../types")
 local path = require("@std/path")
 local query = require("@std/syntax/query")
+local stringext = require("@std/stringext")
 local syntax = require("@std/syntax")
+local printer = require("@std/syntax/printer")
 local utils = require("@std/syntax/utils")
 
 local name = "almost_swapped"
 local message = "This looks like a failed attempt to swap."
+local target = "https://lute.luau.org/cli/lint/almost_swapped.html"
 
 local compFuncs = {}
 
@@ -27,7 +30,7 @@ end
 
 function compFuncs.exprIndexExprsSame(a: syntax.AstExprIndexExpr, b: syntax.AstExprIndexExpr): boolean
 	if a.index.tag == "string" and b.index.tag == "string" then
-		if a.index.text ~= b.index.text then
+		if a.index.token.text ~= b.index.token.text then
 			return false
 		else
 			return compFuncs.refExprsSame(a.expression, b.expression)
@@ -57,10 +60,14 @@ end
 
 -- Report instances of attempted swaps like:
 -- a = b; b = a
-local function lint(ast: syntax.AstStatBlock, sourcepath: path.path): { lintTypes.LintViolation }
+local function lint(
+	ast: syntax.AstStatBlock,
+	sourcepath: path.Path?,
+	_context: lintTypes.RuleContext
+): { lintTypes.LintViolation }
 	local violations = {}
 
-	local nodes = query.findallfromroot(ast, utils.isStatBlock).nodes
+	local nodes = query.findAllFromRoot(ast, utils.isStatBlock).nodes
 
 	for _, block in nodes do
 		for i = 1, #block.statements - 1 do
@@ -78,18 +85,31 @@ local function lint(ast: syntax.AstStatBlock, sourcepath: path.path): { lintType
 			local nextVar, nextVal = nextStat.variables[1].node, nextStat.values[1].node
 
 			if compFuncs.refExprsSame(currVar, nextVal) and compFuncs.refExprsSame(nextVar, currVal) then
-				table.insert(violations, { -- LUAUFIX: severity isn't inferred as a singleton, so table.insert is mad
-					lintname = name,
-					location = syntax.span.create({
-						beginline = currStat.location.beginline,
-						begincolumn = currStat.location.begincolumn,
-						endline = nextStat.location.endline,
-						endcolumn = nextStat.location.endcolumn,
-					}),
-					message = message,
-					severity = "warning",
-					sourcepath = sourcepath,
-				})
+				local currVarStr = stringext.trim(printer.printNode(currVar))
+				local currValStr = stringext.trim(printer.printNode(currVal))
+				local suggestedFix = `{currVarStr}, {currValStr} = {currValStr}, {currVarStr}`
+
+				-- LUAUFIX once we bump luau version to 716
+				-- https://github.com/luau-lang/lute/issues/932
+				table.insert(
+					violations,
+					{ -- LUAUFIX: inserted table isn't inferred as a LintViolation
+						lintname = name,
+						location = syntax.span.create({
+							beginLine = currStat.location.beginLine,
+							beginColumn = currStat.location.beginColumn,
+							endLine = nextStat.location.endLine,
+							endColumn = nextStat.location.endColumn,
+						}),
+						message = message,
+						severity = "warning" :: "warning", -- LUAUFIX: cast needed because severity isn't inferred as a singleton
+						sourcepath = sourcepath,
+						suggestedfix = {
+							fix = suggestedFix,
+						},
+						target = target,
+					} :: lintTypes.LintViolation
+				)
 			end
 		end
 	end

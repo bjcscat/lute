@@ -1,5 +1,8 @@
 #pragma once
+#include "lute/profiler.h"
+
 #include <functional>
+#include <optional>
 #include <string>
 
 struct lua_State;
@@ -14,5 +17,6 @@ bool runBytecode(
     lua_State* GL,
     int program_argc,
     char** program_argv,
-    LuteReporter& reporter
+    LuteReporter& reporter,
+    std::optional<ProfileOptions> profileOptions = std::nullopt
 );

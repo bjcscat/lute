@@ -1,6 +1,6 @@
 #pragma once
 
-#include "lute/resolverequire.h"
+#include "lute/resolvemodule.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -25,15 +25,15 @@ int compile_luau(lua_State* L);
 
 int load_luau(lua_State* L);
 
-int typeofmodule_luau(lua_State* L);
+int typeofModule_luau(lua_State* L);
 
 static const luaL_Reg lib[] = {
     {"parse", luau_parse},
-    {"parseexpr", luau_parseexpr},
+    {"parseExpr", luau_parseexpr},
     {"compile", compile_luau},
     {"load", load_luau},
-    {"resolverequire", resolverequire_luau},
-    {"typeofmodule", typeofmodule_luau},
+    {"resolveModule", resolveModule_luau},
+    {"typeofModule", typeofModule_luau},
     {nullptr, nullptr},
 };
 
